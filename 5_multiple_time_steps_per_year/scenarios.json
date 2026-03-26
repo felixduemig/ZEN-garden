@@ -1,0 +1,12 @@
+{"high_gas_price":
+    {"natural_gas":
+        {"price_import": {
+            "default": "attributes_high",
+            "default_op": 1.5,
+            "file": "price_import_high",
+            "part_file": "price_import_high_part",
+            "file_op": 0.9
+            }
+        }
+    }
+}
