@@ -122,7 +122,7 @@ def check_get_total_get_full_ts(
     if specific_scenario:
         scenario = next(iter(results.solution_loader.scenarios.keys()))
     for test_variable in test_variables:
-        results.get_total(test_variable, "variable", scenario_name=scenario, year=year)
+        results.get_total(test_variable, ComponentType.variable.value, scenario_name=scenario, year=year)
         if test_variable != "capacity_limit":
             results.get_full_ts(
                 test_variable,
