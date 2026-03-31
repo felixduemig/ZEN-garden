@@ -49,7 +49,7 @@ def compare_model_values(
         pbar.set_description(f"Compare parameter {component_name}")
 
         comparison_df = compare_component_values(
-            results, component_name, compare_total, scenarios
+            results, component_name, component_type, compare_total, scenarios
         )
 
         if not comparison_df.empty:
@@ -265,6 +265,7 @@ def get_common_scenario(results_1: Results, results_2: Results) -> str:
 def compare_component_values(
     results: list[Results],
     component_name: str,
+    component_type: str,
     compare_total: bool,
     scenarios: list[str] = None,
     rtol: float = 1e-3,
@@ -273,6 +274,7 @@ def compare_component_values(
 
     :param results: list with results
     :param component_name: component name
+    :param component_type: component tupe
     :param compare_total: if True, compare total value, not full time series
     :param scenarios: None, str or tuple of scenarios
     :param rtol: relative tolerance of equal values
@@ -288,11 +290,11 @@ def compare_component_values(
     scenario_0, scenario_1 = scenarios
 
     if compare_total:
-        val_0 = results_0.get_total(component_name, scenario_name=scenario_0)
-        val_1 = results_1.get_total(component_name, scenario_name=scenario_1)
+        val_0 = results_0.get_total(component_name, component_type, scenario_name=scenario_0)
+        val_1 = results_1.get_total(component_name, component_type, scenario_name=scenario_1)
     else:
-        val_0 = results_0.get_full_ts(component_name, scenario_name=scenario_0)
-        val_1 = results_1.get_full_ts(component_name, scenario_name=scenario_1)
+        val_0 = results_0.get_full_ts(component_name, component_type, scenario_name=scenario_0)
+        val_1 = results_1.get_full_ts(component_name, component_type, scenario_name=scenario_1)
     return _get_comparison_df(val_0, val_1, result_names, component_name, rtol)
 
 
