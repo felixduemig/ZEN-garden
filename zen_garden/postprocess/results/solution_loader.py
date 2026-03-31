@@ -224,7 +224,6 @@ class Scenario:
             ureg.load_definitions(unit_path)
         return ureg
 
-
     def _read_components(self) -> dict[str, list[str]]:
         """Create the component instances.
 
@@ -263,9 +262,7 @@ class Scenario:
                 }
             )
 
-
         self._components = components
-
 
     def get_component(self, component_name: str, component_type: str) -> Component:
         """Method that returns a component given its name.
@@ -351,6 +348,7 @@ class Scenario:
         else:
             raise KeyError(f"Year {year} not in optimized years {all_years}.")
         return ts
+
 
 class SolutionLoader:
     """Implementation of a SolutionLoader."""

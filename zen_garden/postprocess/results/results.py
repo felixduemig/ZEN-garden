@@ -508,7 +508,9 @@ class Results:
             annuity of the duals
         """
         system = scenario.system
-        discount_rate_component = scenario.get_component("discount_rate", ComponentType.parameter.value)
+        discount_rate_component = scenario.get_component(
+            "discount_rate", ComponentType.parameter.value
+        )
         # calculate annuity
         discount_rate = self.solution_loader.get_component_data(
             scenario, discount_rate_component
@@ -633,7 +635,11 @@ class Results:
                     f"{self.get_analysis(scenario_name=scenario_name)}"
                 )
         units = self.get_df(
-            component_name, component_type, scenario_name=scenario_name, data_type="units", index=index
+            component_name,
+            component_type,
+            scenario_name=scenario_name,
+            data_type="units",
+            index=index,
         )
         if units is None:
             return None
@@ -668,15 +674,18 @@ class Results:
         return units
 
     def _convert_to_pint_units(
-        self, u: str, convert_to_yearly_unit: bool, component_name: str, component_type: str
+        self,
+        u: str,
+        convert_to_yearly_unit: bool,
+        component_name: str,
+        component_type: str,
     ) -> str:
         """Converts a string to a pint unit."""
         component = None
         for s in self.solution_loader.scenarios:
             if component_name in self.solution_loader.scenarios[s].components:
                 component = self.solution_loader.scenarios[s].get_component(
-                    component_name,
-                    component_type
+                    component_name, component_type
                 )
                 break
         if component is None:
@@ -807,7 +816,10 @@ class Results:
         return component.doc
 
     def get_index_names(
-        self, component_name: str, component_type: str, scenario_name: Optional[str] = None
+        self,
+        component_name: str,
+        component_type: str,
+        scenario_name: Optional[str] = None,
     ) -> list[str]:
         """Docstring for get_index_names.
 
@@ -931,7 +943,9 @@ class Results:
         """
         if "carrier" not in dataframe.index.names:
             reference_carriers = self.get_df(
-                "set_reference_carriers", ComponentType.sets.value, scenario_name=scenario_name
+                "set_reference_carriers",
+                ComponentType.sets.value,
+                scenario_name=scenario_name,
             )
             data_extracted = pd.DataFrame()
             for tech in dataframe.index.get_level_values("technology"):
@@ -961,7 +975,9 @@ class Results:
         :param scenario: scenario of interest
         :return: pd.DataFrame containing carrier_flow data desired
         """
-        set_nodes_on_edges = self.get_df("set_nodes_on_edges", ComponentType.sets.value, scenario_name=scenario)
+        set_nodes_on_edges = self.get_df(
+            "set_nodes_on_edges", ComponentType.sets.value, scenario_name=scenario
+        )
         set_nodes_on_edges = {
             edge: set_nodes_on_edges[edge].split(",")
             for edge in set_nodes_on_edges.index
@@ -1013,10 +1029,16 @@ class Results:
 
             if component == "flow_transport_in":
                 full_ts = self.get_full_ts(
-                    "flow_transport", ComponentType.variable.value, scenario_name=scenario_name, year=year
+                    "flow_transport",
+                    ComponentType.variable.value,
+                    scenario_name=scenario_name,
+                    year=year,
                 )
                 transport_loss = self.get_full_ts(
-                    "flow_transport_loss", ComponentType.variable.value, scenario_name=scenario_name, year=year
+                    "flow_transport_loss",
+                    ComponentType.variable.value,
+                    scenario_name=scenario_name,
+                    year=year,
                 )
                 if full_ts.empty or transport_loss.empty:
                     continue
@@ -1025,7 +1047,10 @@ class Results:
                 )
             elif component == "flow_transport_out":
                 full_ts = self.get_full_ts(
-                    "flow_transport", ComponentType.variable.value, scenario_name=scenario_name, year=year
+                    "flow_transport",
+                    ComponentType.variable.value,
+                    scenario_name=scenario_name,
+                    year=year,
                 )
                 if full_ts.empty:
                     continue
@@ -1033,7 +1058,10 @@ class Results:
             else:
                 try:
                     full_ts = self.get_full_ts(
-                        component, ComponentType.variable.value,scenario_name=scenario_name, year=year
+                        component,
+                        ComponentType.variable.value,
+                        scenario_name=scenario_name,
+                        year=year,
                     )
                     if full_ts.empty:
                         continue

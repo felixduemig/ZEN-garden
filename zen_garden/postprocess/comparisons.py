@@ -290,11 +290,19 @@ def compare_component_values(
     scenario_0, scenario_1 = scenarios
 
     if compare_total:
-        val_0 = results_0.get_total(component_name, component_type, scenario_name=scenario_0)
-        val_1 = results_1.get_total(component_name, component_type, scenario_name=scenario_1)
+        val_0 = results_0.get_total(
+            component_name, component_type, scenario_name=scenario_0
+        )
+        val_1 = results_1.get_total(
+            component_name, component_type, scenario_name=scenario_1
+        )
     else:
-        val_0 = results_0.get_full_ts(component_name, component_type, scenario_name=scenario_0)
-        val_1 = results_1.get_full_ts(component_name, component_type, scenario_name=scenario_1)
+        val_0 = results_0.get_full_ts(
+            component_name, component_type, scenario_name=scenario_0
+        )
+        val_1 = results_1.get_full_ts(
+            component_name, component_type, scenario_name=scenario_1
+        )
     return _get_comparison_df(val_0, val_1, result_names, component_name, rtol)
 
 

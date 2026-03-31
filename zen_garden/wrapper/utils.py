@@ -94,8 +94,12 @@ def load_results(out_dir: Path, scenario: str) -> dict:
 
     system = r.get_system()
     solver = r.get_solver()
-    capacity_addition = r.get_total("capacity_addition", ComponentType.variable.value, scenario_name=scenario)
-    capacity_units = r.get_unit("capacity_addition", ComponentType.variable.value, scenario_name=scenario)
+    capacity_addition = r.get_total(
+        "capacity_addition", ComponentType.variable.value, scenario_name=scenario
+    )
+    capacity_units = r.get_unit(
+        "capacity_addition", ComponentType.variable.value, scenario_name=scenario
+    )
 
     # Get conversion technologies excluding retrofitting
     set_conversion_not_retrofitting = list(
@@ -104,7 +108,9 @@ def load_results(out_dir: Path, scenario: str) -> dict:
     )
 
     # Get edges from results
-    edges = r.get_total("set_nodes_on_edges", ComponentType.sets.value, scenario_name=scenario).index.values
+    edges = r.get_total(
+        "set_nodes_on_edges", ComponentType.sets.value, scenario_name=scenario
+    ).index.values
 
     # Reformat the results
     capacity_addition.columns.name = "year"
