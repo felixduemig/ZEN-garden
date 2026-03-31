@@ -272,8 +272,8 @@ class Scenario:
         if component_name not in self.components[component_type]:
             raise KeyError(
                 f"Component {component_name} not found in scenario "
-                f"{self.name} for component type {component_type}. Available components: "
-                f"{list(self.components[component_type].keys())}"
+                f"{self.name} for component type {component_type}. Available "
+                f"components: {list(self.components[component_type].keys())}"
             )
 
         component_info = self.components[component_type][component_name]

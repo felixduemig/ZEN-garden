@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from zen_garden.postprocess.results.results import Results, ComponentType
+from zen_garden.postprocess.results.results import ComponentType, Results
 from zen_garden.preprocess.unit_handling import UnitHandling
 
 
