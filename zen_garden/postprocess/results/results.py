@@ -305,7 +305,11 @@ class Results:
         for scenario_name in scenario_names:
             scenario = self.solution_loader.scenarios[scenario_name]
             if component_name not in scenario.components[component_type]:
-                continue
+                logging.warning(
+                    f"Component {component_name} not found. If you expected "
+                    "this component to be present, the solution is probably empty "
+                    "and therefore skipped."
+                )
             component = scenario.get_component(component_name, component_type)
             idx = reformat_slicing_index(index, component)
             scenarios_dict[scenario_name] = self.get_full_ts_per_scenario(
@@ -546,46 +550,6 @@ class Results:
                     )
                 )
         return annuity
-
-    def get_dual(
-        self,
-        component_name: str,
-        scenario_name: Optional[str] = None,
-        year: Optional[int] = None,
-        discount_to_first_step: bool = True,
-        keep_raw: Optional[bool] = False,
-        index: Optional[
-            Union[NestedTuple, NestedDict, list[str], str, float, int]
-        ] = None,
-    ) -> Optional["pd.DataFrame | pd.Series[Any]"]:
-        """Extracts the dual variables of a component.
-
-        Args:
-            component_name: Name of dual
-            scenario_name: Scenario Name
-            year: Year
-            discount_to_first_step: apply annuity to first year of interval or
-                entire interval
-            keep_raw: Keep the raw values of the rolling horizon optimization
-            index: slicing index of the resulting dataframe
-
-        Returns:
-            DataFrame: Duals of the component
-        """
-        if not self.get_solver(scenario_name=scenario_name).save_duals:
-            logging.warning("Duals are not calculated. Skip.")
-            return None
-
-        duals = self.get_full_ts(
-            component_name=component_name,
-            component_type=ComponentType.dual.value,
-            scenario_name=scenario_name,
-            year=year,
-            discount_to_first_step=discount_to_first_step,
-            keep_raw=keep_raw,
-            index=index,
-        )
-        return duals
 
     def get_unit(
         self,

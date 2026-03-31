@@ -24,7 +24,7 @@ class ComponentType(Enum):
     parameter: str = "parameter"
     variable: str = "variable"
     dual: str = "dual"
-    reduced_costs: str = "reduced_costs"
+    reduced_cost: str = "reduced_cost"
     sets: str = "sets"
 
     @classmethod
@@ -41,7 +41,7 @@ class ComponentType(Enum):
             "var_dict.h5": ComponentType.variable,
             "set_dict.h5": ComponentType.sets,
             "dual_dict.h5": ComponentType.dual,
-            "reduced_costs_dict.h5": ComponentType.reduced_costs,
+            "reduced_costs_dict.h5": ComponentType.reduced_cost,
         }
 
 

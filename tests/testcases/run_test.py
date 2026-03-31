@@ -147,7 +147,7 @@ def test_1a(folder_path):
     # run the test
     data_set_name = "test_1a"
     run(
-        config=os.path.join("config_duals.json"),
+        config=os.path.join("config_duals_reduced_costs.json"),
         dataset=os.path.join(data_set_name),
     )
 
