@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from zen_garden import Results, run
+from zen_garden.postprocess.results.solution_loader import ComponentType
 from zen_garden.wrapper.operation_scenarios import operation_scenarios
 
 # fixtures
@@ -44,6 +45,7 @@ def compare_variables_results(test_model: str, results: Results, folder_path: st
     # variables which don't match the test values
     failed_variables = defaultdict(dict)
     compare_counter = 0
+    component_type = ComponentType.variable.value
     # iterate through dataframe rows
     if test_model in test_variables:
         for s in test_variables[test_model]:
@@ -51,8 +53,8 @@ def compare_variables_results(test_model: str, results: Results, folder_path: st
                 scenario = results.solution_loader.scenarios[s]
                 test_values = test_variables[test_model][s]
                 for c in test_values:
-                    if c in scenario.components:
-                        values = results.get_df(c, scenario_name=s)
+                    if c in scenario.components[component_type]:
+                        values = results.get_df(c, component_type, scenario_name=s)
                         for test_value in test_values[c]:
                             if isinstance(test_value["index"], list):
                                 if len(test_value["index"]) == 1:
@@ -120,16 +122,17 @@ def check_get_total_get_full_ts(
     if specific_scenario:
         scenario = next(iter(results.solution_loader.scenarios.keys()))
     for test_variable in test_variables:
-        results.get_total(test_variable, scenario_name=scenario, year=year)
+        results.get_total(test_variable, ComponentType.variable.value, scenario_name=scenario, year=year)
         if test_variable != "capacity_limit":
             results.get_full_ts(
                 test_variable,
+                ComponentType.variable.value,
                 scenario_name=scenario,
                 year=year,
                 discount_to_first_step=discount_to_first_step,
             )
     if get_doc:
-        results.get_doc(test_variables[0])
+        results.get_doc(test_variables[0], ComponentType.variable.value)
 
 
 # All the tests

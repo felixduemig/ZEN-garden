@@ -75,7 +75,7 @@ class Component:
     def __init__(
         self,
         name: str,
-        component_type: ComponentType,
+        component_type: str,
         index_names: list[str],
         ts_type: Optional[TimestepType],
         ts_name: Optional[str],
@@ -93,7 +93,7 @@ class Component:
         self._has_units = has_units
 
     @property
-    def component_type(self) -> ComponentType:
+    def component_type(self) -> str:
         return self._component_type
 
     @property
@@ -140,9 +140,44 @@ class Scenario:
         self._system: System = self._read_system()
         self._solver: Solver = self._read_solver()
         self._benchmarking: dict[str, Any] = self._read_benchmarking()
-        self._component_types: dict[str, list[str]] = None
         self._components: dict[str, Component] = None
         self._read_components()
+
+    @property
+    def components(self) -> dict[str, dict]:
+        return self._components
+
+    @property
+    def analysis(self) -> Analysis:
+        return self._analysis
+
+    @property
+    def solver(self) -> Solver:
+        return self._solver
+
+    @property
+    def system(self) -> System:
+        return self._system
+
+    @property
+    def benchmarking(self) -> dict[str, Any]:
+        return self._benchmarking
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    @property
+    def has_rh(self) -> bool:
+        return self.system.use_rolling_horizon
+
+    @property
+    def ureg(self) -> pint.UnitRegistry:
+        return self._read_ureg()
+
+    @property
+    def exists(self) -> bool:
+        return self._exists
 
     def _read_analysis(self) -> Analysis:
         analysis_path = os.path.join(self.path, "analysis.json")
@@ -191,6 +226,86 @@ class Scenario:
             ureg.load_definitions(unit_path)
         return ureg
 
+    def _read_components(self) -> dict[str, list[str]]:
+        """Create the component instances.
+
+        The components are stored in three files and the file-names define
+        the types of the component. Furthermore, the timestep name and type
+        are derived by checking if any of the defined time steps name is
+        in the index of the dataframe.
+        """
+        components: dict[str, dict] = {}
+
+        if not self._exists:
+            return {}
+
+        if self.has_rh:
+            mf_name = [i for i in os.listdir(self.path) if "MF_" in i][0]
+            component_folder = os.path.join(self.path, mf_name)
+        else:
+            component_folder = self.path
+
+        for file_name, component_type in ComponentType.get_file_names_maps().items():
+            file_path = os.path.join(component_folder, file_name)
+
+            if not os.path.exists(file_path):
+                continue
+
+            h5_file = h5py.File(file_path)
+            components.update(
+                {
+                    component_type.value: {
+                        cn: {
+                            "file_name": file_name,
+                            "file_path": file_path,
+                        }
+                        for cn in h5_file.keys()
+                    }
+                }
+            )
+
+        self._components = components
+
+    def get_component(self, component_name: str, component_type: str) -> Component:
+        """Method that returns a component given its name.
+        :param component_name: The name of the component.
+        :return: The component.
+        """
+        if component_name not in self.components[component_type]:
+            raise KeyError(
+                f"Component {component_name} not found in scenario "
+                f"{self.name} for component type {component_type}. Available "
+                f"components: {list(self.components[component_type].keys())}"
+            )
+
+        component_info = self.components[component_type][component_name]
+        file_name = component_info["file_name"]
+
+        h5_file = h5py.File(component_info["file_path"])
+        version = get_solution_version(self)
+        index_names = get_index_names(h5_file, component_name, version)
+        time_index = set(index_names).intersection(
+            set(TimestepType.get_time_steps_names())
+        )
+        timestep_name = time_index.pop() if len(time_index) > 0 else None
+        timestep_type = TimestepType.get_time_step_type(timestep_name)
+
+        doc = get_doc(h5_file, component_name, version)
+
+        has_units = get_has_units(h5_file, component_name, version)
+
+        ans = Component(
+            component_name,
+            component_type,
+            index_names,
+            timestep_type,
+            timestep_name,
+            file_name,
+            doc,
+            has_units,
+        )
+        return ans
+
     def convert_ts2year(
         self, df: ["pd.DataFrame", "pd.Series"]
     ) -> ["pd.DataFrame", "pd.Series"]:
@@ -235,131 +350,6 @@ class Scenario:
         else:
             raise KeyError(f"Year {year} not in optimized years {all_years}.")
         return ts
-
-    def _read_components(self) -> dict[str, list[str]]:
-        """Create the component instances.
-
-        The components are stored in three files and the file-names define
-        the types of the component. Furthermore, the timestep name and type
-        are derived by checking if any of the defined time steps name is
-        in the index of the dataframe.
-        """
-        component_types: dict[str, list[str]] = {
-            t: [] for t in ComponentType.get_component_type_names()
-        }
-        components: dict[str, dict] = {}
-
-        if not self._exists:
-            return component_types
-
-        if self.has_rh:
-            mf_name = [i for i in os.listdir(self.path) if "MF_" in i][0]
-            component_folder = os.path.join(self.path, mf_name)
-        else:
-            component_folder = self.path
-
-        for file_name, component_type in ComponentType.get_file_names_maps().items():
-            file_path = os.path.join(component_folder, file_name)
-
-            if not os.path.exists(file_path):
-                continue
-
-            h5_file = h5py.File(file_path)
-            component_types[component_type.value] = list(h5_file.keys())
-            components.update(
-                {
-                    cn: {
-                        "component_type": component_type,
-                        "file_name": file_name,
-                        "file_path": file_path,
-                    }
-                    for cn in h5_file.keys()
-                }
-            )
-
-        self._component_types = component_types
-        self._components = components
-
-    @property
-    def components(self) -> dict[str, dict]:
-        return self._components
-
-    @property
-    def component_types(self) -> dict[str, list[str]]:
-        return self._component_types
-
-    @property
-    def analysis(self) -> Analysis:
-        return self._analysis
-
-    @property
-    def solver(self) -> Solver:
-        return self._solver
-
-    @property
-    def system(self) -> System:
-        return self._system
-
-    @property
-    def benchmarking(self) -> dict[str, Any]:
-        return self._benchmarking
-
-    @property
-    def path(self) -> str:
-        return self._path
-
-    @property
-    def has_rh(self) -> bool:
-        return self.system.use_rolling_horizon
-
-    @property
-    def ureg(self) -> pint.UnitRegistry:
-        return self._read_ureg()
-
-    @property
-    def exists(self) -> bool:
-        return self._exists
-
-    def get_component(self, component_name: str) -> Component:
-        """Method that returns a component given its name.
-        :param component_name: The name of the component.
-        :return: The component.
-        """
-        if component_name not in self.components:
-            raise KeyError(
-                f"Component {component_name} not found in scenario "
-                f"{self.name}. Available components: "
-                f"{list(self.components.keys())}"
-            )
-
-        component_info = self.components[component_name]
-        component_type = component_info["component_type"]
-        file_name = component_info["file_name"]
-
-        h5_file = h5py.File(component_info["file_path"])
-        version = get_solution_version(self)
-        index_names = get_index_names(h5_file, component_name, version)
-        time_index = set(index_names).intersection(
-            set(TimestepType.get_time_steps_names())
-        )
-        timestep_name = time_index.pop() if len(time_index) > 0 else None
-        timestep_type = TimestepType.get_time_step_type(timestep_name)
-
-        doc = get_doc(h5_file, component_name, version)
-
-        has_units = get_has_units(h5_file, component_name, version)
-
-        ans = Component(
-            component_name,
-            component_type,
-            index_names,
-            timestep_type,
-            timestep_name,
-            file_name,
-            doc,
-            has_units,
-        )
-        return ans
 
 
 class SolutionLoader:
@@ -567,6 +557,7 @@ class SolutionLoader:
         """The timestep duration is stored as any other component, the only thing
         is to define the correct name depending on the component timestep type.
         """
+        component_type = ComponentType.parameter.value
         if component.timestep_type is TimestepType.operational:
             timestep_duration_name = "time_steps_operation_duration"
         else:
@@ -574,7 +565,7 @@ class SolutionLoader:
         version = get_solution_version(scenario)
         if check_if_v1_leq_v2(version, "v0"):
             time_step_duration = self.get_component_data(
-                scenario, scenario.get_component(timestep_duration_name)
+                scenario, scenario.get_component(timestep_duration_name, component_type)
             )
         else:
             time_steps_file_name = _get_time_steps_file(scenario)
