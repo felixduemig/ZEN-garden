@@ -310,6 +310,7 @@ class Results:
                     "this component to be present, the solution is probably empty "
                     "and therefore skipped."
                 )
+                continue
             component = scenario.get_component(component_name, component_type)
             idx = reformat_slicing_index(index, component)
             scenarios_dict[scenario_name] = self.get_full_ts_per_scenario(
@@ -444,6 +445,11 @@ class Results:
         for scenario_name in scenario_names:
             scenario = self.solution_loader.scenarios[scenario_name]
             if component_name not in scenario.components[component_type]:
+                logging.warning(
+                    f"Component {component_name} not found. If you expected "
+                    "this component to be present, the solution is probably "
+                    "empty and therefore skipped."
+                )
                 continue
             component = scenario.get_component(component_name, component_type)
             idx = reformat_slicing_index(index, component)

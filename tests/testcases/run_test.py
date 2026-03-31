@@ -117,22 +117,25 @@ def check_get_total_get_full_ts(
         specific_scenario: Specific scenario
         results: Results instance of testcase function has been called from
     """
-    test_variables = ["demand", "capacity", "storage_level", "capacity_limit"]
+    test_variables = {"demand": ComponentType.parameter.value,
+                      "capacity": ComponentType.variable.value,
+                      "storage_level": ComponentType.variable.value,
+                      "capacity_limit": ComponentType.parameter.value}
     scenario = None
     if specific_scenario:
         scenario = next(iter(results.solution_loader.scenarios.keys()))
     for test_variable in test_variables:
-        results.get_total(test_variable, ComponentType.variable.value, scenario_name=scenario, year=year)
+        results.get_total(test_variable, test_variables[test_variable], scenario_name=scenario, year=year)
         if test_variable != "capacity_limit":
             results.get_full_ts(
                 test_variable,
-                ComponentType.variable.value,
+                test_variables[test_variable],
                 scenario_name=scenario,
                 year=year,
                 discount_to_first_step=discount_to_first_step,
             )
-    if get_doc:
-        results.get_doc(test_variables[0], ComponentType.variable.value)
+        if get_doc:
+            results.get_doc(test_variable, test_variables[test_variable])
 
 
 # All the tests
@@ -282,12 +285,12 @@ def test_1j(folder_path):
     data_set_name = "test_1j"
     data_set_name_op = data_set_name + "_none__operation"
     run(
-        config=os.path.join(folder_path, "config_duals.json"),
+        config=os.path.join(folder_path, "config_duals_reduced_costs.json"),
         dataset=os.path.join(folder_path, data_set_name),
         folder_output=os.path.join(folder_path, "outputs"),
     )
     operation_scenarios(
-        config=os.path.join(folder_path, "config_duals.json"),
+        config=os.path.join(folder_path, "config_duals_reduced_costs.json"),
         dataset=os.path.join(folder_path, data_set_name),
         folder_output=os.path.join(folder_path, "outputs"),
         delete_data="True",
@@ -644,12 +647,12 @@ def test_7b(folder_path):
     data_set_name = "test_7b"
     data_set_name_op = data_set_name + "_none__operation"
     run(
-        config=os.path.join(folder_path, "config_duals.json"),
+        config=os.path.join(folder_path, "config_duals_reduced_costs.json"),
         dataset=os.path.join(folder_path, data_set_name),
         folder_output=os.path.join(folder_path, "outputs"),
     )
     operation_scenarios(
-        config=os.path.join(folder_path, "config_duals.json"),
+        config=os.path.join(folder_path, "config_duals_reduced_costs.json"),
         dataset=os.path.join(folder_path, data_set_name),
         folder_output=os.path.join(folder_path, "outputs"),
         delete_data=True,
