@@ -3,8 +3,8 @@
     "dataset": "5_multiple_time_steps_per_year"
   },
   "solver": {
-    "solver": "gurobi",
-    "save_reduced_costs": true,
+    "name": "gurobi",
+    "save_reduced_costs": false,
     "save_duals": true
   }
 }
