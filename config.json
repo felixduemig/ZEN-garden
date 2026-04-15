@@ -1,0 +1,13 @@
+{
+  "analysis": {
+    "dataset": "5_multiple_time_steps_per_year"
+  },
+  "solver": {
+    "name": "gurobi",
+    "save_duals": true,
+    "save_reduced_costs": true,
+    "solver_options": {
+      "Method": 2
+    }
+  }
+}
