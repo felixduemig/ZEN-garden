@@ -93,6 +93,7 @@ class Postprocess:
         self.save_duals()
         self.save_reduced_costs()
         self.save_capacity_addition_analysis()
+        self.save_objective_coefficients_analysis()
         self.save_system()
         self.save_analysis()
         self.save_scenarios()
@@ -526,6 +527,90 @@ class Postprocess:
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
         df.to_csv(csv_file)
         logging.info(f"Capacity addition analysis saved to {csv_file}")
+
+    @staticmethod
+    def _arr_to_series(arr):
+        """Converts scalar/array-like solver output to a pandas Series."""
+        if hasattr(arr, "shape") and len(arr.shape) > 0:
+            series = arr.to_series()
+        else:
+            scalar = arr.values if hasattr(arr, "values") else arr
+            series = pd.Series([scalar], index=pd.Index([0], name="entry"))
+        return series
+
+    def save_objective_coefficients_analysis(self):
+        """Saves objective coefficients, values, and reduced costs for all variables."""
+        if self.solver.name != "gurobi":
+            logging.info("Objective coefficient export currently supported for gurobi")
+            return
+
+        frames = []
+        for name in self.model.variables:
+            var = self.model.variables[name]
+
+            try:
+                obj_series = self._arr_to_series(var.get_solver_attribute("Obj"))
+            except Exception as err:
+                logging.debug(
+                    f"Could not retrieve objective coefficients for variable {name}: {err}"
+                )
+                continue
+
+            try:
+                rc_series = self._arr_to_series(var.get_solver_attribute("RC"))
+            except Exception as err:
+                logging.debug(
+                    f"Could not retrieve reduced costs for variable {name}: {err}"
+                )
+                rc_series = pd.Series(np.nan, index=obj_series.index)
+
+            scale_series = pd.Series(1.0, index=obj_series.index)
+            if self.solver.use_scaling:
+                var_labels = var.labels.data
+                scaling_factors = self.optimization_setup.scaling.D_c_inv[var_labels]
+                scaling_factors = np.asarray(scaling_factors).reshape(-1)
+                if scaling_factors.size == 1:
+                    scale_series = pd.Series(
+                        np.repeat(float(scaling_factors[0]), len(obj_series.index)),
+                        index=obj_series.index,
+                    )
+                elif scaling_factors.size == len(obj_series.index):
+                    scale_series = pd.Series(scaling_factors, index=obj_series.index)
+                else:
+                    logging.debug(
+                        "Skipping objective/RC rescaling for variable %s because "
+                        "scaling factor length (%s) does not match variable length (%s)",
+                        name,
+                        scaling_factors.size,
+                        len(obj_series.index),
+                    )
+                rc_series = rc_series.reindex(obj_series.index) * scale_series
+
+            obj_series_original = obj_series.reindex(obj_series.index) / scale_series
+
+            if name in self.model.solution:
+                value_series = self._arr_to_series(self.model.solution[name])
+                value_series = value_series.reindex(obj_series.index)
+            else:
+                value_series = pd.Series(np.nan, index=obj_series.index)
+
+            df_var = pd.DataFrame(index=obj_series.index)
+            df_var["objective_coefficient_solver"] = obj_series
+            df_var["objective_coefficient"] = obj_series_original
+            df_var["value"] = value_series
+            df_var["reduced_cost"] = rc_series.reindex(obj_series.index)
+            df_var = df_var.reset_index()
+            df_var.insert(0, "variable", name)
+            frames.append(df_var)
+
+        if not frames:
+            logging.warning("No objective coefficients available to save")
+            return
+
+        df_all = pd.concat(frames, ignore_index=True)
+        csv_file = self.name_dir.joinpath("objective_coefficients_analysis.csv")
+        df_all.to_csv(csv_file, index=False)
+        logging.info(f"Objective coefficients analysis saved to {csv_file}")
 
     def save_system(self):
         """Saves the system dict as json."""
