@@ -60,7 +60,7 @@ class Postprocess:
         self.constraints = optimization_setup.constraints
         self.param_map = param_map
         self.scaling = optimization_setup.scaling
-
+        
         # get name or directory
         self.model_name = model_name
         self.name_dir = Path(self.analysis.folder_output).joinpath(self.model_name)
@@ -92,6 +92,7 @@ class Postprocess:
         self.save_var()
         self.save_duals()
         self.save_reduced_costs()
+        self.save_capacity_addition_analysis()
         self.save_system()
         self.save_analysis()
         self.save_scenarios()
@@ -480,6 +481,52 @@ class Postprocess:
         self.write_file(
             self.name_dir.joinpath("reduced_costs_dict"), data_frames, mode="w"
         )
+
+    def save_capacity_addition_analysis(self):
+        """Saves capacity_addition variable values and reduced costs as CSV."""
+        if "capacity_addition" not in self.model.variables:
+            logging.info("capacity_addition variable not found")
+            return
+
+        # Get variable values
+        var_values = self.model.solution["capacity_addition"]
+        df = var_values.to_series().dropna().to_frame("value")
+
+        if df.empty:
+            logging.warning("No capacity_addition data to save")
+            return
+
+        # Get unit
+        unit = self.vars.units.get("capacity_addition", "") if hasattr(self.vars, "units") else ""
+        df["unit"] = unit
+
+        # Get reduced costs if gurobi
+        if self.solver.name == "gurobi":
+            try:
+                rc_arr = self.model.variables["capacity_addition"].get_solver_attribute("RC")
+                
+                # rescale if needed
+                if self.solver.use_scaling:
+                    var_labels = self.model.variables["capacity_addition"].labels.data
+                    scaling_factor = self.optimization_setup.scaling.D_c_inv[var_labels]
+                    rc_arr = rc_arr * scaling_factor
+                
+                rc_series = rc_arr.to_series()
+                df["reduced_cost"] = rc_series
+            except Exception as e:
+                logging.debug(f"Could not retrieve reduced costs: {e}")
+                df["reduced_cost"] = np.nan
+        else:
+            df["reduced_cost"] = np.nan
+
+        # Reorder columns
+        df = df[["unit", "value", "reduced_cost"]]
+
+        # Save to CSV
+        csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
+        df.to_csv(csv_file)
+        logging.info(f"Capacity addition analysis saved to {csv_file}")
+
 
     def save_system(self):
         """Saves the system dict as json."""
