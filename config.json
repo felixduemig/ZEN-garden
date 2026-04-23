@@ -1,0 +1,19 @@
+{
+  "analysis": {
+    "dataset": "5_multiple_time_steps_per_year"
+  },
+  "solver": {
+    "name": "gurobi",
+    "save_reduced_costs": true,
+    "run_diagnostics": true,
+    "use_scaling": false,
+    "save_duals": true,
+    "solver_options": {
+    "Presolve": 0,
+    "Method": 0,
+    "LogFile": "gurobi.log",
+    "OutputFlag": 1,
+    "LogToConsole": 1
+    }
+  }
+}
