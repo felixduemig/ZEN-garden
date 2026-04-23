@@ -1,10 +1,16 @@
 {
   "analysis": {
-    "dataset": "12_multiple_in_output_carriers_conversion_edit"
+    "dataset": "5_multiple_time_steps_per_year_edit"
   },
   "solver": {
     "name": "gurobi",
     "save_reduced_costs": true,
-    "run_diagnostics": true
+    "run_diagnostics": true,
+    "use_scaling": false,
+    "save_duals": true,
+    "solver_options": {
+    "Presolve": 0,
+    "Method": 0
+    }
   }
 }

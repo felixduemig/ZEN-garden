@@ -91,9 +91,11 @@ class Postprocess:
         self.save_param()
         self.save_var()
         self.save_duals()
+        self.save_relevant_duals_analysis()
         self.save_reduced_costs()
         self.save_capacity_addition_analysis()
         self.save_objective_coefficients_analysis()
+        self.save_pv_rc_decomposition_analysis()
         self.save_system()
         self.save_analysis()
         self.save_scenarios()
@@ -483,6 +485,59 @@ class Postprocess:
             self.name_dir.joinpath("reduced_costs_dict"), data_frames, mode="w"
         )
 
+    def save_relevant_duals_analysis(self):
+        """Saves selected dual variable values as CSV for RC diagnostics."""
+        if not self.solver.save_duals:
+            logging.info("Relevant dual analysis is skipped because duals are not saved")
+            return
+
+        relevant_constraints = [
+            "constraint_cost_capex_yearly",
+            "constraint_cost_capex_yearly_total",
+            "constraint_net_present_cost",
+            "constraint_cost_total",
+            "constraint_technology_diffusion_limit",
+            "constraint_technology_diffusion_limit_total",
+            "constraint_technology_lifetime",
+            "constraint_linear_capex",
+            "constraint_capex_coupling",
+            "constraint_capacity_coupling",
+        ]
+
+        frames = []
+        for name in relevant_constraints:
+            if name not in self.model.constraints:
+                continue
+
+            arr = self.model.constraints[name].dual
+
+            if self.solver.use_scaling:
+                cons_labels = self.model.constraints[name].labels.data
+                scaling_factor = self.optimization_setup.scaling.D_r_inv[cons_labels]
+                arr = arr * scaling_factor
+
+            if hasattr(arr, "shape") and len(arr.shape) > 0:
+                series = arr.to_series().dropna()
+            else:
+                scalar = arr.values if hasattr(arr, "values") else arr
+                series = pd.Series([scalar], index=pd.Index([0], name="entry"))
+
+            if series.empty:
+                continue
+
+            df_constraint = series.to_frame("dual").reset_index()
+            df_constraint.insert(0, "constraint", name)
+            frames.append(df_constraint)
+
+        if not frames:
+            logging.warning("No relevant dual data available to save")
+            return
+
+        df_all = pd.concat(frames, ignore_index=True)
+        csv_file = self.name_dir.joinpath("relevant_duals_analysis.csv")
+        df_all.to_csv(csv_file, index=False)
+        logging.info(f"Relevant dual analysis saved to {csv_file}")
+
     def save_capacity_addition_analysis(self):
         """Saves capacity_addition variable values and reduced costs as CSV."""
         if "capacity_addition" not in self.model.variables:
@@ -611,6 +666,165 @@ class Postprocess:
         csv_file = self.name_dir.joinpath("objective_coefficients_analysis.csv")
         df_all.to_csv(csv_file, index=False)
         logging.info(f"Objective coefficients analysis saved to {csv_file}")
+
+    def save_pv_rc_decomposition_analysis(self):
+        """Saves a focused RC/dual decomposition table for PV technologies.
+
+        The export contains objective coefficients, values, reduced costs, and
+        selected duals aligned by technology, location, and yearly time step.
+        """
+        if self.solver.name != "gurobi":
+            logging.info("PV RC decomposition export currently supported for gurobi")
+            return
+
+        if "capacity_addition" not in self.model.variables:
+            logging.info("capacity_addition variable not found")
+            return
+
+        focus_technologies = {"photovoltaics", "photovoltaics_new"}
+        var = self.model.variables["capacity_addition"]
+
+        obj_series = self._arr_to_series(var.get_solver_attribute("Obj"))
+        rc_series = self._arr_to_series(var.get_solver_attribute("RC"))
+        value_series = self._arr_to_series(self.model.solution["capacity_addition"])
+
+        scale_series = pd.Series(1.0, index=obj_series.index)
+        if self.solver.use_scaling:
+            var_labels = var.labels.data
+            scaling_factors = self.optimization_setup.scaling.D_c_inv[var_labels]
+            scaling_factors = np.asarray(scaling_factors).reshape(-1)
+            if scaling_factors.size == len(obj_series.index):
+                scale_series = pd.Series(scaling_factors, index=obj_series.index)
+
+        df = pd.DataFrame(index=obj_series.index)
+        df["objective_coefficient_solver"] = obj_series
+        df["objective_coefficient"] = obj_series / scale_series
+        df["value"] = value_series.reindex(obj_series.index)
+        df["reduced_cost"] = rc_series.reindex(obj_series.index) * scale_series
+        df = df.reset_index()
+
+        required_cols = {
+            "set_technologies",
+            "set_capacity_types",
+            "set_location",
+            "set_time_steps_yearly",
+        }
+        if not required_cols.issubset(set(df.columns)):
+            logging.warning("capacity_addition index columns missing for PV RC decomposition")
+            return
+
+        df = df[
+            (df["set_technologies"].isin(focus_technologies))
+            & (df["set_capacity_types"] == "power")
+        ].copy()
+
+        if df.empty:
+            logging.warning("No PV rows found for RC decomposition export")
+            return
+
+        def get_dual_df(constraint_name):
+            if constraint_name not in self.model.constraints:
+                return pd.DataFrame(
+                    columns=[
+                        "set_technologies",
+                        "set_location",
+                        "set_time_steps_yearly",
+                        constraint_name,
+                    ]
+                )
+
+            arr = self.model.constraints[constraint_name].dual
+            if self.solver.use_scaling:
+                cons_labels = self.model.constraints[constraint_name].labels.data
+                scaling_factor = self.optimization_setup.scaling.D_r_inv[cons_labels]
+                arr = arr * scaling_factor
+
+            if hasattr(arr, "shape") and len(arr.shape) > 0:
+                s = arr.to_series().dropna()
+            else:
+                scalar = arr.values if hasattr(arr, "values") else arr
+                s = pd.Series([scalar], index=pd.Index([0], name="entry"))
+
+            if s.empty:
+                return pd.DataFrame(
+                    columns=[
+                        "set_technologies",
+                        "set_location",
+                        "set_time_steps_yearly",
+                        constraint_name,
+                    ]
+                )
+
+            d = s.to_frame(constraint_name).reset_index()
+
+            rename_map = {}
+            if "set_conversion_technologies" in d.columns:
+                rename_map["set_conversion_technologies"] = "set_technologies"
+            if "set_nodes" in d.columns:
+                rename_map["set_nodes"] = "set_location"
+            d = d.rename(columns=rename_map)
+
+            needed = ["set_technologies", "set_location", "set_time_steps_yearly"]
+            if not set(needed).issubset(set(d.columns)):
+                return pd.DataFrame(
+                    columns=[
+                        "set_technologies",
+                        "set_location",
+                        "set_time_steps_yearly",
+                        constraint_name,
+                    ]
+                )
+
+            d = d[d["set_technologies"].isin(focus_technologies)].copy()
+            return d[["set_technologies", "set_location", "set_time_steps_yearly", constraint_name]]
+
+        dual_constraints = [
+            "constraint_cost_capex_yearly",
+            "constraint_technology_lifetime",
+            "constraint_linear_capex",
+            "constraint_capex_coupling",
+            "constraint_capacity_coupling",
+        ]
+
+        for cname in dual_constraints:
+            d = get_dual_df(cname)
+            if d.empty:
+                continue
+            # For capex/capacity coupling constraints there are no capacity types,
+            # so we merge by technology, location, and yearly index.
+            df = df.merge(
+                d,
+                how="left",
+                on=["set_technologies", "set_location", "set_time_steps_yearly"],
+            )
+
+        df["objective_minus_reduced_cost"] = (
+            df["objective_coefficient"] - df["reduced_cost"]
+        )
+
+        order_cols = [
+            "set_technologies",
+            "set_capacity_types",
+            "set_location",
+            "set_time_steps_yearly",
+            "value",
+            "objective_coefficient",
+            "reduced_cost",
+            "objective_minus_reduced_cost",
+            "constraint_cost_capex_yearly",
+            "constraint_technology_lifetime",
+            "constraint_linear_capex",
+            "constraint_capex_coupling",
+            "constraint_capacity_coupling",
+        ]
+        existing_cols = [c for c in order_cols if c in df.columns]
+        df = df[existing_cols].sort_values(
+            ["set_technologies", "set_location", "set_time_steps_yearly"]
+        )
+
+        csv_file = self.name_dir.joinpath("pv_rc_decomposition_analysis.csv")
+        df.to_csv(csv_file, index=False)
+        logging.info(f"PV RC decomposition analysis saved to {csv_file}")
 
     def save_system(self):
         """Saves the system dict as json."""

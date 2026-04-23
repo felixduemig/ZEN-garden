@@ -2,6 +2,7 @@
     "set_conversion_technologies": [
         "natural_gas_boiler",
         "photovoltaics",
+        "photovoltaics_new",
         "heat_pump"
     ],
     "set_storage_technologies": [
