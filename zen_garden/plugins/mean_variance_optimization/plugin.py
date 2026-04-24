@@ -274,7 +274,7 @@ class VarianceRules(GenericRule):
         return (self.parameters.variance_price_import * self.parameters.price_import * self.variables["flow_import"] * self.variables["flow_import"]).sum(["set_carriers", "set_nodes", "set_time_steps_operation"])
 
     def _construct_export_term(self):
-        return (self.parameters.variance_price_import * self.parameters.price_export * self.variables["flow_export"] * self.variables["flow_export"]).sum(["set_carriers", "set_nodes", "set_time_steps_operation"])
+        return (self.parameters.variance_price_export * self.parameters.price_export * self.variables["flow_export"] * self.variables["flow_export"]).sum(["set_carriers", "set_nodes", "set_time_steps_operation"])
 
     def _construct_demand_shedding_term(self):
         # replace inf with large number
@@ -501,7 +501,7 @@ class VarianceRules(GenericRule):
 
         # technology opex variances
         if "opex" in config.get("include_variances_for"):
-            term_variances_opex = self._construct_capex_term()
+            term_variances_opex = self._construct_opex_term()
         else:
             term_variances_opex = 0
 

@@ -15,5 +15,13 @@
     "OutputFlag": 1,
     "LogToConsole": 1
     }
-  }
+  },
+    "plugins": {
+        "mean_variance_optimization": {
+            "weighting_factor": 0.01,
+            "include_variances_for": [
+                "capex"
+            ]
+        }
+    }
 }

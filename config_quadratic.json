@@ -1,0 +1,36 @@
+{
+    "analysis": {
+        "dataset": "5_multiple_time_steps_per_year"
+    },
+    "solver": {
+        "name": "gurobi",
+        "save_duals": 1,
+        "keep_files": true,
+        "solver_options": {
+            "Method": 2,
+            "NodeMethod": 2,
+            "BarHomogeneous": 1,
+            "DualReductions": 0,
+            "Threads": 8,
+            "Crossover": 0,
+            "ScaleFlag": 2,
+            "BarOrder": -1,
+            "NumericFocus": 2
+        },
+        "use_scaling": false,
+        "run_diagnostics": true,
+        "scaling_include_rhs": true
+    },
+    "plugins": {
+        "mean_variance_optimization": {
+            "weighting_factor": 0.01,
+            "include_variances_for": [
+                "capex",
+                "opex",
+                "import",
+                "export",
+                "demand_shedding"
+            ]
+        }
+    }
+}

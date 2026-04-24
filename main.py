@@ -66,11 +66,11 @@ for variance_inclusion in include_var_for.keys():
         config["plugins"]["mean_variance_optimization"]["include_variances_for"] = include_var_for[variance_inclusion]
         config["solver"]["solver_options"]["LogFile"] =  f"{result_folder}/solver.log"
 
-        with open("./config_quadratic.json", "w") as f:
+        with open("./config.json", "w") as f:
             json.dump(config, f, indent=4)
 
         run(
-            config="./config_quadratic.json",
+            config="./config.json",
             dataset="Crystal_Ball",
             folder_output=result_folder,
         )
