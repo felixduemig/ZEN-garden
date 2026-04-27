@@ -71,7 +71,7 @@
     }
   },
   "capex_specific_conversion": {
-    "default_value": 750.0,
+    "default_value": 7510.0,
     "unit": "Euro/kW"
   },
   "capacity_addition_unbounded": {

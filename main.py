@@ -23,7 +23,7 @@ from datetime import datetime
 #     )
 # Crystal Ball
 # current time
-os.chdir("C:/ZenGardenInput/ZEN-models/data")
+os.chdir("C:\\Users\\felix\\Documents\\GitHub\\ZEN-garden")
 
 now = datetime.now()
 time_str = now.strftime("%Y%m%d-%H%M%S")
@@ -35,10 +35,10 @@ with open("./config.json") as f:
     config = json.load(f)
 config["solver"]["solver_options"]["LogFile"] = f"{result_folder}/solver.log"
 
-with open("./config.json", "w") as f:
+with open("./config_quadratic.json", "w") as f:
     json.dump(config, f, indent=4)
 
-run(config="./config.json", dataset="Crystal_Ball", folder_output=result_folder)
+run(config="./config_quadratic.json", dataset="5_multiple_time_steps_per_year", folder_output=result_folder)
 # for weight in [1, 0.1, 0.01]:
 
 include_var_for = {
@@ -51,8 +51,8 @@ include_var_for = {
 
 for variance_inclusion in include_var_for.keys():
 
-    for weight in [1000, 100, 10, 1, 0.1, 0.01]:
-
+    #for weight in [10, 1, 0.1]:
+    for weight in [0]:
         result_folder = f"./outputs_{time_str}/{variance_inclusion}/lambda_{str(weight)}"
 
         if not os.path.exists(result_folder):
@@ -66,11 +66,11 @@ for variance_inclusion in include_var_for.keys():
         config["plugins"]["mean_variance_optimization"]["include_variances_for"] = include_var_for[variance_inclusion]
         config["solver"]["solver_options"]["LogFile"] =  f"{result_folder}/solver.log"
 
-        with open("./config.json", "w") as f:
+        with open("./config_quadratic.json", "w") as f:
             json.dump(config, f, indent=4)
 
         run(
-            config="./config.json",
-            dataset="Crystal_Ball",
+            config="./config_quadratic.json",
+            dataset="5_multiple_time_steps_per_year",
             folder_output=result_folder,
         )

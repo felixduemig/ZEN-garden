@@ -113,7 +113,13 @@ def add_variance_to_carrier(carrier):
 def add_variance_to_technology(technology):
     set_location = technology.location_type
 
-    technology.variance_opex_specific_variable = technology.data_input.extract_input_data(
+    # Stored in raw_time_series instead of directly as an attribute so that
+    # TimeSeriesAggregation converts the base yearly timestep indices to
+    # technology-specific operation timestep IDs (via setattr). Storing it
+    # directly as technology.variance_opex_specific_variable skips this step,
+    # causing a timestep index mismatch in check_for_subindex when the parameter
+    # is registered.
+    technology.raw_time_series["variance_opex_specific_variable"] = technology.data_input.extract_input_data(
         "variance_opex_specific_variable",
         index_sets=[set_location, "set_time_steps"],
         time_steps="set_base_time_steps_yearly",
@@ -289,13 +295,24 @@ class VarianceRules(GenericRule):
         # Capex variance
         techs = self.sets["set_conversion_technologies"]
         nodes = self.sets["set_nodes"]
-        capacity_addition = self.variables["capacity_addition"].rename(
+        
+        # sel() must be called before rename(), not after. Linopy's sel() on a
+        # renamed Variable does not actually filter the underlying coordinates —
+        # capacity_addition still contains entries for all technologies. Multiplying
+        # this unfiltered variable with a technology-type-specific parameter
+        # (e.g. variance_capex_specific_conversion, which only spans conversion
+        # technologies) then causes an index mismatch. Filtering first with the
+        # native dimension names ensures only the relevant entries remain.
+
+        capacity_addition = self.variables["capacity_addition"].sel(
+            {"set_technologies": techs, "set_location": nodes}
+        )
+        capacity_addition = capacity_addition.rename(
             {
                 "set_technologies": "set_conversion_technologies",
                 "set_location": "set_nodes",
             }
         )
-        capacity_addition = capacity_addition.sel({"set_nodes": nodes, "set_conversion_technologies": techs})
 
 
 
@@ -369,13 +386,15 @@ class VarianceRules(GenericRule):
             return 0
         else:
             # Capex variance
-            capacity_addition = self.variables["capacity_addition"].rename(
+            capacity_addition = self.variables["capacity_addition"].sel(
+                {"set_technologies": techs, "set_location": nodes}
+            )
+            capacity_addition = capacity_addition.rename(
                 {
                     "set_technologies": "set_storage_technologies",
                     "set_location": "set_nodes",
                 }
             )
-            capacity_addition = capacity_addition.sel({"set_nodes": nodes, "set_storage_technologies": techs})
             term_variance_capex = (self.parameters.variance_capex_specific_storage * self.parameters.capex_specific_storage * capacity_addition * capacity_addition).sum(["set_storage_technologies", "set_nodes", "set_capacity_types"])
             return term_variance_capex
 
@@ -414,14 +433,15 @@ class VarianceRules(GenericRule):
         else:
             # Capex variance
             capacity_type = "power"
-            capacity_addition = self.variables["capacity_addition"].rename(
+            capacity_addition = self.variables["capacity_addition"].sel(
+                {"set_technologies": techs, "set_location": edges, "set_capacity_types": capacity_type}
+            )
+            capacity_addition = capacity_addition.rename(
                 {
                     "set_technologies": "set_transport_technologies",
                     "set_location": "set_edges",
                 }
             )
-            capacity_addition = capacity_addition.sel(
-                {"set_edges": edges, "set_transport_technologies": techs, "set_capacity_types": capacity_type})
 
             term_variance_capex = (self.parameters.variance_capex_specific_transport * self.parameters.capex_specific_transport * capacity_addition * capacity_addition).sum(["set_transport_technologies", "set_edges"])
             return term_variance_capex

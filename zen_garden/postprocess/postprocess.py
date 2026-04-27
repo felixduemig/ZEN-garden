@@ -482,6 +482,65 @@ class Postprocess:
             self.name_dir.joinpath("reduced_costs_dict"), data_frames, mode="w"
         )
 
+    def _compute_rc_capex_scaling(self, techs):
+        """
+        Computes scaling factors to convert raw RC (objective/NPC units) to
+        capex_specific units (e.g. EUR/GW).
+
+        Derived from the constraint chain:
+          capacity_addition
+            -> cost_capex_overnight = capex_specific * capacity_addition
+            -> cost_capex_yearly[y] = annuity_factor * cost_capex_overnight
+                                      (summed over depreciation lifetime)
+            -> net_present_cost[y]  = discount_factor[y] * cost_total[y]
+            -> objective            = sum_y net_present_cost[y]
+
+        Therefore:
+          RC = capex_specific * annuity_factor * sum(discount_factor[y] over lifetime)
+
+        Scaling = annuity_factor * sum(discount_factor[y] over depreciation lifetime)
+        RC / scaling  ≈  capex_specific  (same unit as capex_specific_conversion)
+        """
+        params = self.optimization_setup.parameters
+        system = self.optimization_setup.system
+        es = self.optimization_setup.energy_system
+
+        r = float(params.discount_rate)
+        dy = system.interval_between_years
+        years = list(es.set_time_steps_yearly)
+        first_year = years[0]
+        last_year_entire = es.set_time_steps_yearly_entire_horizon[-1]
+
+        # Discount factor per planning year (exact ZEN-garden formula)
+        discount_factors = {}
+        for y in years:
+            iv = 1 if y == last_year_entire else dy
+            discount_factors[y] = sum(
+                (1.0 / (1.0 + r)) ** (dy * (y - first_year) + i)
+                for i in range(iv)
+            )
+
+        result = {}
+        for tech in techs:
+            lt = float(np.squeeze(params.depreciation_time.sel(set_technologies=tech).values))
+            # annuity factor (same formula as technology.py constraint_cost_capex_yearly)
+            if r != 0:
+                af = ((1.0 + r) ** lt * r) / ((1.0 + r) ** lt - 1.0)
+            else:
+                af = 1.0 / lt
+
+            # number of planning periods covered by the depreciation window
+            n_periods = max(int(np.floor(lt / dy)), 1)
+
+            for y_inv in years:
+                # years in the horizon that actually receive annuity payments
+                pay_years = [y for y in years if y_inv <= y <= y_inv + n_periods - 1]
+                discount_sum = sum(discount_factors[y] for y in pay_years)
+                scaling = af * discount_sum
+                result[(tech, y_inv)] = scaling if scaling > 0 else np.nan
+
+        return result
+
     def save_capacity_addition_analysis(self):
         """Saves capacity_addition variable values and reduced costs as CSV."""
         if "capacity_addition" not in self.model.variables:
@@ -504,13 +563,13 @@ class Postprocess:
         if self.solver.name == "gurobi":
             try:
                 rc_arr = self.model.variables["capacity_addition"].get_solver_attribute("RC")
-                
+
                 # rescale if needed
                 if self.solver.use_scaling:
                     var_labels = self.model.variables["capacity_addition"].labels.data
                     scaling_factor = self.optimization_setup.scaling.D_c_inv[var_labels]
                     rc_arr = rc_arr * scaling_factor
-                
+
                 rc_series = rc_arr.to_series()
                 df["reduced_cost"] = rc_series
             except Exception as e:
@@ -519,8 +578,24 @@ class Postprocess:
         else:
             df["reduced_cost"] = np.nan
 
+        # Scaled RC: convert from NPC units to capex_specific units
+        # RC / scaling ≈ capex_specific_equivalent
+        # (how much capex would need to drop for the technology to become competitive)
+        try:
+            techs = df.index.get_level_values("set_technologies").unique().tolist()
+            scaling_map = self._compute_rc_capex_scaling(techs)
+            df["rc_capex_equivalent"] = [
+                df["reduced_cost"].iloc[i] / scaling_map.get(
+                    (df.index[i][0], df.index[i][3]), np.nan
+                )
+                for i in range(len(df))
+            ]
+        except Exception as e:
+            logging.warning(f"Could not compute capex-scaled RC: {e}")
+            df["rc_capex_equivalent"] = np.nan
+
         # Reorder columns
-        df = df[["unit", "value", "reduced_cost"]]
+        df = df[["unit", "value", "reduced_cost", "rc_capex_equivalent"]]
 
         # Save to CSV
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")

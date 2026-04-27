@@ -4,26 +4,22 @@
     },
     "solver": {
         "name": "gurobi",
-        "save_duals": 1,
-        "keep_files": true,
-        "solver_options": {
-            "Method": 2,
-            "NodeMethod": 2,
-            "BarHomogeneous": 1,
-            "DualReductions": 0,
-            "Threads": 8,
-            "Crossover": 0,
-            "ScaleFlag": 2,
-            "BarOrder": -1,
-            "NumericFocus": 2
-        },
-        "use_scaling": false,
+        "save_reduced_costs": true,
         "run_diagnostics": true,
-        "scaling_include_rhs": true
+        "use_scaling": false,
+        "save_duals": true,
+        "solver_options": {
+            "Presolve": 0,
+            "Method": 2,
+            "Crossover": 0,
+            "LogFile": "./outputs_20260427-153818/all/lambda_0/solver.log",
+            "OutputFlag": 1,
+            "LogToConsole": 1
+        }
     },
     "plugins": {
         "mean_variance_optimization": {
-            "weighting_factor": 0.01,
+            "weighting_factor": 0,
             "include_variances_for": [
                 "capex",
                 "opex",

@@ -10,7 +10,8 @@
     "save_duals": true,
     "solver_options": {
     "Presolve": 0,
-    "Method": 0,
+    "Method": 2,
+    "Crossover": 0,
     "LogFile": "gurobi.log",
     "OutputFlag": 1,
     "LogToConsole": 1
