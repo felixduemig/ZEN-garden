@@ -484,22 +484,15 @@ class Postprocess:
 
     def _compute_rc_capex_scaling(self, techs):
         """
-        Computes scaling factors to convert raw RC (objective/NPC units) to
-        capex_specific units (e.g. EUR/GW).
+        Computes the annuity-discount scaling factor per (tech, investment_year).
 
-        Derived from the constraint chain:
-          capacity_addition
-            -> cost_capex_overnight = capex_specific * capacity_addition
-            -> cost_capex_yearly[y] = annuity_factor * cost_capex_overnight
-                                      (summed over depreciation lifetime)
-            -> net_present_cost[y]  = discount_factor[y] * cost_total[y]
-            -> objective            = sum_y net_present_cost[y]
+        scaling = annuity_factor * sum(discount_factor[y] for y in depreciation window)
 
-        Therefore:
-          RC = capex_specific * annuity_factor * sum(discount_factor[y] over lifetime)
+        This converts capex_specific units into objective (NPV) units:
+            capex_NPV_contribution = capex_specific * scaling
 
-        Scaling = annuity_factor * sum(discount_factor[y] over depreciation lifetime)
-        RC / scaling  ≈  capex_specific  (same unit as capex_specific_conversion)
+        Used to invert the NPV contribution back to capex-specific units when computing
+        rc_capex_equivalent from constraint duals.
         """
         params = self.optimization_setup.parameters
         system = self.optimization_setup.system
@@ -511,7 +504,7 @@ class Postprocess:
         first_year = years[0]
         last_year_entire = es.set_time_steps_yearly_entire_horizon[-1]
 
-        # Discount factor per planning year (exact ZEN-garden formula)
+        # Discount factor per planning year (exact ZEN-garden formula from energy_system.py)
         discount_factors = {}
         for y in years:
             iv = 1 if y == last_year_entire else dy
@@ -533,7 +526,6 @@ class Postprocess:
             n_periods = max(int(np.floor(lt / dy)), 1)
 
             for y_inv in years:
-                # years in the horizon that actually receive annuity payments
                 pay_years = [y for y in years if y_inv <= y <= y_inv + n_periods - 1]
                 discount_sum = sum(discount_factors[y] for y in pay_years)
                 scaling = af * discount_sum
@@ -541,8 +533,176 @@ class Postprocess:
 
         return result
 
+    def _compute_rc_capex_equivalent(self, df):
+        """
+        Computes rc_capex_equivalent analytically from constraint duals.
+
+        The Gurobi barrier RC (with Crossover=0) for non-built technologies equals
+        mu/x (barrier perturbation), NOT the true LP reduced cost. To get the true
+        capex-equivalent, we use the dual of constraint_technology_lifetime instead:
+
+            rc_capex_equiv = capex_specific
+                             - sum(-dual_lifetime[y] for y in pay_years) / scaling
+
+        where:
+          dual_lifetime[y] < 0: shadow price of capacity in year y
+                                 (negative because more capacity reduces NPV cost)
+          -dual_lifetime[y]    : value of 1 unit capacity in year y
+          scaling              : annuity_factor * sum(discount_factor[y] over lifetime)
+
+        For built technologies (value > 0): rc_capex_equiv ≈ 0 (already competitive)
+        For unbuilt technologies (value ≈ 0): rc_capex_equiv ≈ capex_specific - breakeven_capex
+            i.e., how much capex_specific would need to decrease to become competitive.
+
+        Note: For unbuilt technologies the barrier method slightly perturbs the dual,
+        causing a small underestimation. This is still far more accurate than
+        using the raw Gurobi barrier RC directly.
+        """
+        params = self.optimization_setup.parameters
+        system = self.optimization_setup.system
+        es = self.optimization_setup.energy_system
+
+        r = float(params.discount_rate)
+        dy = system.interval_between_years
+        years = list(es.set_time_steps_yearly)
+        first_year = years[0]
+        last_year_entire = es.set_time_steps_yearly_entire_horizon[-1]
+
+        # Discount factors (formula-based, reliable for all techs)
+        discount_factors = {}
+        for y in years:
+            iv = 1 if y == last_year_entire else dy
+            discount_factors[y] = sum(
+                (1.0 / (1.0 + r)) ** (dy * (y - first_year) + i)
+                for i in range(iv)
+            )
+
+        # Dual of constraint_technology_lifetime as pandas Series.
+        # Index levels: (technology, capacity_type, location, year) — same order as capacity var.
+        # Dual is negative: -dual = NPV value of 1 extra unit of capacity.
+        dual_arr = self.model.constraints["constraint_technology_lifetime"].dual
+        # Apply the same row-scaling inversion that save_duals uses, so values are
+        # in model units (not solver-scaled units).
+        if self.solver.use_scaling:
+            cons_labels = self.model.constraints["constraint_technology_lifetime"].labels.data
+            scaling_factor = self.optimization_setup.scaling.D_r_inv[cons_labels]
+            dual_arr = dual_arr * scaling_factor
+        dual_lifetime_series = dual_arr.to_series().dropna()
+
+        # Build capex_specific lookup: (tech, node, year) -> value.
+        # Try conversion first, then storage, then transport.
+        capex_lookup = {}
+        for param_name in ["capex_specific_conversion", "capex_specific_storage",
+                           "capex_specific_transport"]:
+            p = getattr(params, param_name, None)
+            if p is None:
+                continue
+            try:
+                s = p.to_series().dropna()
+                for idx, val in s.items():
+                    if not isinstance(idx, tuple):
+                        idx = (idx,)
+                    # Normalize: always store as (tech, ctype_or_node, ..., year)
+                    # We only care about (tech, node, year) for conversion/transport
+                    # and (tech, capacity_type, node, year) for storage.
+                    # Use positional access: level 0 = tech, last = year, second-to-last = node
+                    tech_name = idx[0]
+                    year_val = idx[-1]
+                    node_val = idx[-2]
+                    ctype_val = idx[1] if len(idx) == 4 else None
+                    key = (tech_name, node_val, year_val)
+                    if key not in capex_lookup:
+                        capex_lookup[key] = float(val)
+                    key_with_ctype = (tech_name, ctype_val, node_val, year_val)
+                    if key_with_ctype not in capex_lookup:
+                        capex_lookup[key_with_ctype] = float(val)
+            except Exception:
+                continue
+
+        # Cache per-tech annuity/depreciation info
+        tech_cache = {}
+
+        result = []
+        for i in range(len(df)):
+            idx = df.index[i]
+            # Index levels: set_technologies, set_capacity_types, set_location, set_time_steps_yearly
+            tech, ctype, node, y_inv = idx[0], idx[1], idx[2], idx[3]
+
+            try:
+                # Annuity + period info (cached per tech)
+                if tech not in tech_cache:
+                    lt = float(np.squeeze(
+                        params.depreciation_time.sel(set_technologies=tech).values
+                    ))
+                    af = ((1.0 + r) ** lt * r) / ((1.0 + r) ** lt - 1.0) if r != 0 else 1.0 / lt
+                    n_periods = max(int(np.floor(lt / dy)), 1)
+                    tech_cache[tech] = (af, n_periods)
+                af, n_periods = tech_cache[tech]
+
+                # Pay years for this investment year
+                pay_years = [y for y in years if y_inv <= y <= y_inv + n_periods - 1]
+                discount_sum = sum(discount_factors[y] for y in pay_years)
+                scaling = af * discount_sum
+                if scaling <= 0:
+                    result.append(np.nan)
+                    continue
+
+                # Capex specific for this technology
+                cs = capex_lookup.get((tech, ctype, node, y_inv),
+                     capex_lookup.get((tech, node, y_inv), np.nan))
+                if np.isnan(cs):
+                    result.append(np.nan)
+                    continue
+
+                # Electricity value: sum of (-dual_lifetime) over pay years.
+                # dual_lifetime < 0, so -dual_lifetime > 0 is the NPV value of capacity.
+                elec_value = 0.0
+                for y in pay_years:
+                    # Try positional index lookup: level 0=tech, 1=ctype, 2=location, 3=year
+                    dual_val = None
+                    try:
+                        mask = (
+                            (dual_lifetime_series.index.get_level_values(0) == tech)
+                            & (dual_lifetime_series.index.get_level_values(1) == ctype)
+                            & (dual_lifetime_series.index.get_level_values(2) == node)
+                            & (dual_lifetime_series.index.get_level_values(3) == y)
+                        )
+                        matches = dual_lifetime_series[mask]
+                        if len(matches) > 0:
+                            dual_val = float(matches.iloc[0])
+                    except Exception:
+                        pass
+                    if dual_val is None:
+                        elec_value = np.nan
+                        break
+                    elec_value += -dual_val  # negate: dual is negative, value is positive
+
+                if np.isnan(elec_value):
+                    result.append(np.nan)
+                else:
+                    # rc_capex_equiv = capex_specific - breakeven_capex
+                    # where breakeven_capex = electricity_value / scaling
+                    result.append(cs - elec_value / scaling)
+
+            except Exception:
+                result.append(np.nan)
+
+        return result
+
     def save_capacity_addition_analysis(self):
-        """Saves capacity_addition variable values and reduced costs as CSV."""
+        """Saves capacity_addition variable values and reduced costs as CSV.
+
+        For each (technology, capacity_type, location, investment_year), saves:
+          - value: optimal capacity addition [model GW]
+          - unit: unit label
+          - reduced_cost: raw Gurobi RC (informational; note: barrier RC for unbuilt
+              technologies equals mu/x, not the true LP reduced cost)
+          - rc_capex_equivalent: capex reduction needed for the technology to become
+              competitive [same unit as capex_specific_conversion]. Computed analytically
+              from constraint_technology_lifetime duals, which are reliable even without
+              crossover. For built technologies ≈ 0; for unbuilt technologies ≈ capex
+              premium over the breakeven cost.
+        """
         if "capacity_addition" not in self.model.variables:
             logging.info("capacity_addition variable not found")
             return
@@ -559,43 +719,51 @@ class Postprocess:
         unit = self.vars.units.get("capacity_addition", "") if hasattr(self.vars, "units") else ""
         df["unit"] = unit
 
-        # Get reduced costs if gurobi
+        # Raw Gurobi RC (informational only; unreliable for unbuilt technologies
+        # when using barrier method without crossover — equals mu/x, not true LP RC)
         if self.solver.name == "gurobi":
             try:
                 rc_arr = self.model.variables["capacity_addition"].get_solver_attribute("RC")
-
-                # rescale if needed
                 if self.solver.use_scaling:
                     var_labels = self.model.variables["capacity_addition"].labels.data
                     scaling_factor = self.optimization_setup.scaling.D_c_inv[var_labels]
                     rc_arr = rc_arr * scaling_factor
-
-                rc_series = rc_arr.to_series()
-                df["reduced_cost"] = rc_series
+                df["reduced_cost"] = rc_arr.to_series()
             except Exception as e:
                 logging.debug(f"Could not retrieve reduced costs: {e}")
                 df["reduced_cost"] = np.nan
         else:
             df["reduced_cost"] = np.nan
 
-        # Scaled RC: convert from NPC units to capex_specific units
-        # RC / scaling ≈ capex_specific_equivalent
-        # (how much capex would need to drop for the technology to become competitive)
+        # rc_capex_equivalent: capex reduction needed to become competitive.
+        # Computed from constraint_technology_lifetime duals (accurate for both built
+        # and unbuilt technologies, unlike the raw Gurobi barrier RC).
         try:
-            techs = df.index.get_level_values("set_technologies").unique().tolist()
-            scaling_map = self._compute_rc_capex_scaling(techs)
-            df["rc_capex_equivalent"] = [
-                df["reduced_cost"].iloc[i] / scaling_map.get(
-                    (df.index[i][0], df.index[i][3]), np.nan
-                )
-                for i in range(len(df))
-            ]
+            df["rc_capex_equivalent"] = self._compute_rc_capex_equivalent(df)
         except Exception as e:
-            logging.warning(f"Could not compute capex-scaled RC: {e}")
+            logging.warning(f"Could not compute capex-equivalent RC: {e}")
             df["rc_capex_equivalent"] = np.nan
 
+        # rc_capex_equivalent_input_units: same value converted back to the original
+        # input units (e.g. Euro/kW instead of megaEuro/GW).
+        # ZEN-garden multiplies capex_specific by fraction_year = unaggregated_time_steps_per_year
+        # / total_hours_per_year before storing it internally. Dividing by fraction_year
+        # (= multiplying by total_hours_per_year / unaggregated_time_steps_per_year)
+        # reverses this normalization, giving the value in the same units as the
+        # attributes.json input (e.g. Euro/kW).
+        try:
+            fraction_year = (
+                self.system.unaggregated_time_steps_per_year
+                / self.system.total_hours_per_year
+            )
+            df["rc_capex_equivalent_input_units"] = df["rc_capex_equivalent"] / fraction_year
+        except Exception as e:
+            logging.warning(f"Could not compute rc_capex_equivalent_input_units: {e}")
+            df["rc_capex_equivalent_input_units"] = np.nan
+
         # Reorder columns
-        df = df[["unit", "value", "reduced_cost", "rc_capex_equivalent"]]
+        df = df[["unit", "value", "reduced_cost", "rc_capex_equivalent",
+                 "rc_capex_equivalent_input_units"]]
 
         # Save to CSV
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")

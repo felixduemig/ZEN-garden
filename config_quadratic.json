@@ -12,7 +12,7 @@
             "Presolve": 0,
             "Method": 2,
             "Crossover": 0,
-            "LogFile": "./outputs_20260427-153818/all/lambda_0/solver.log",
+            "LogFile": "./outputs_20260430-092047/all/lambda_0/solver.log",
             "OutputFlag": 1,
             "LogToConsole": 1
         }
