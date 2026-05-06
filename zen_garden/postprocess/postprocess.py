@@ -695,13 +695,16 @@ class Postprocess:
         For each (technology, capacity_type, location, investment_year), saves:
           - value: optimal capacity addition [model GW]
           - unit: unit label
-          - reduced_cost: raw Gurobi RC (informational; note: barrier RC for unbuilt
-              technologies equals mu/x, not the true LP reduced cost)
-          - rc_capex_equivalent: capex reduction needed for the technology to become
-              competitive [same unit as capex_specific_conversion]. Computed analytically
-              from constraint_technology_lifetime duals, which are reliable even without
-              crossover. For built technologies ≈ 0; for unbuilt technologies ≈ capex
-              premium over the breakeven cost.
+          - reduced_cost: Gurobi RC in model units (megaEuro/GW).
+              With crossover (Crossover != 0): exact LP reduced cost.
+              Without crossover (barrier only): equals mu/x, not the true LP RC.
+          - reduced_cost_input_units: reduced_cost converted to input units (Euro/kW).
+              Only meaningful when crossover is enabled.
+          - rc_capex_equivalent: capex reduction needed to become competitive, computed
+              from constraint_technology_lifetime duals [model units, megaEuro/GW].
+              Reliable even without crossover (~4% absolute error for far-from-optimal
+              technologies; unreliable for near-optimal technologies with RC < ~30 Euro/kW).
+          - rc_capex_equivalent_input_units: same, in input units (Euro/kW).
         """
         if "capacity_addition" not in self.model.variables:
             logging.info("capacity_addition variable not found")
@@ -719,8 +722,13 @@ class Postprocess:
         unit = self.vars.units.get("capacity_addition", "") if hasattr(self.vars, "units") else ""
         df["unit"] = unit
 
-        # Raw Gurobi RC (informational only; unreliable for unbuilt technologies
-        # when using barrier method without crossover — equals mu/x, not true LP RC)
+        # Gurobi RC in model units.
+        # With crossover enabled: exact LP reduced cost → directly interpretable.
+        # Without crossover (barrier only): equals mu/x → use rc_capex_equivalent instead.
+        crossover_enabled = (
+            self.solver.name == "gurobi"
+            and self.solver.solver_options.get("Crossover", -1) != 0
+        )
         if self.solver.name == "gurobi":
             try:
                 rc_arr = self.model.variables["capacity_addition"].get_solver_attribute("RC")
@@ -734,6 +742,29 @@ class Postprocess:
                 df["reduced_cost"] = np.nan
         else:
             df["reduced_cost"] = np.nan
+
+        # reduced_cost_input_units: Gurobi RC converted to input units (Euro/kW).
+        # Uses the same fraction_year inversion as rc_capex_equivalent_input_units.
+        # Only populated when crossover is enabled (otherwise the RC is mu/x, not meaningful).
+        try:
+            if crossover_enabled:
+                fraction_year = (
+                    self.system.unaggregated_time_steps_per_year
+                    / self.system.total_hours_per_year
+                )
+                df["reduced_cost_input_units"] = df["reduced_cost"] / fraction_year
+                logging.info(
+                    "Crossover enabled: reduced_cost_input_units contains exact LP RC in Euro/kW"
+                )
+            else:
+                df["reduced_cost_input_units"] = np.nan
+                logging.info(
+                    "Crossover disabled: reduced_cost_input_units is NaN "
+                    "(use rc_capex_equivalent_input_units instead)"
+                )
+        except Exception as e:
+            logging.warning(f"Could not compute reduced_cost_input_units: {e}")
+            df["reduced_cost_input_units"] = np.nan
 
         # rc_capex_equivalent: capex reduction needed to become competitive.
         # Computed from constraint_technology_lifetime duals (accurate for both built
@@ -762,8 +793,9 @@ class Postprocess:
             df["rc_capex_equivalent_input_units"] = np.nan
 
         # Reorder columns
-        df = df[["unit", "value", "reduced_cost", "rc_capex_equivalent",
-                 "rc_capex_equivalent_input_units"]]
+        df = df[["unit", "value",
+                 "reduced_cost", "reduced_cost_input_units",
+                 "rc_capex_equivalent", "rc_capex_equivalent_input_units"]]
 
         # Save to CSV
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
