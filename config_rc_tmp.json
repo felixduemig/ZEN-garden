@@ -1,0 +1,15 @@
+{
+    "analysis": {
+        "dataset": "5_multiple_time_steps_per_year"
+    },
+    "solver": {
+        "solver_options": {
+            "Method": 0,
+            "Presolve": 0,
+            "LogFile": "./outputs_20260506-132207/rc_analysis\\solver.log"
+        },
+        "name": "gurobi",
+        "save_duals": true,
+        "save_reduced_costs": true
+    }
+}

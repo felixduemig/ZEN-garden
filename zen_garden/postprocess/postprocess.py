@@ -92,6 +92,8 @@ class Postprocess:
         self.save_var()
         self.save_duals()
         self.save_reduced_costs()
+        self.save_capacity_addition_analysis()
+        self.save_boundary_shadow_prices()
         self.save_system()
         self.save_analysis()
         self.save_scenarios()
@@ -480,6 +482,449 @@ class Postprocess:
         self.write_file(
             self.name_dir.joinpath("reduced_costs_dict"), data_frames, mode="w"
         )
+
+    def _compute_rc_capex_equivalent(self, df):
+        """Computes the capex-equivalent reduced cost from constraint_technology_lifetime duals.
+
+        Uses the LP optimality condition for capacity_addition at its lower bound:
+
+            rc_capex_equiv = capex_specific - elec_value / scaling
+
+        where:
+            elec_value = sum(-dual_lifetime[y] for y in pay_years)
+            scaling    = annuity_factor * sum(discount_factor[y] for y in pay_years)
+
+        With Primal Simplex (Method=0) the duals are exact LP duals — no approximation.
+
+        Returns a list of rc values in internal model units, one per row of df.
+        Divide by fraction_year to get Euro/kW (see save_capacity_addition_analysis).
+        """
+        params = self.optimization_setup.parameters
+        system = self.optimization_setup.system
+        es = self.optimization_setup.energy_system
+
+        r = float(params.discount_rate)
+        dy = system.interval_between_years
+        years = list(es.set_time_steps_yearly)
+        first_year = years[0]
+        last_year_entire = es.set_time_steps_yearly_entire_horizon[-1]
+
+        # Discount factor per planning year — matches ZEN-garden's energy_system.py formula
+        discount_factors = {}
+        for y in years:
+            iv = 1 if y == last_year_entire else dy
+            discount_factors[y] = sum(
+                (1.0 / (1.0 + r)) ** (dy * (y - first_year) + i)
+                for i in range(iv)
+            )
+
+        # Exact LP duals from constraint_technology_lifetime (negative = capacity has value)
+        dual_arr = self.model.constraints["constraint_technology_lifetime"].dual
+        if self.solver.use_scaling:
+            cons_labels = self.model.constraints["constraint_technology_lifetime"].labels.data
+            dual_arr = dual_arr * self.optimization_setup.scaling.D_r_inv[cons_labels]
+        dual_series = dual_arr.to_series().dropna()
+
+        # Internal capex_specific lookup: (tech, ctype, node, year) -> value
+        capex_lookup = {}
+        for param_name in ["capex_specific_conversion", "capex_specific_storage",
+                           "capex_specific_transport"]:
+            p = getattr(params, param_name, None)
+            if p is None:
+                continue
+            try:
+                for idx, val in p.to_series().dropna().items():
+                    if not isinstance(idx, tuple):
+                        idx = (idx,)
+                    tech_name, year_val, node_val = idx[0], idx[-1], idx[-2]
+                    ctype_val = idx[1] if len(idx) == 4 else None
+                    capex_lookup.setdefault((tech_name, node_val, year_val), float(val))
+                    capex_lookup.setdefault((tech_name, ctype_val, node_val, year_val), float(val))
+            except Exception:
+                continue
+
+        tech_cache = {}
+        result = []
+
+        for idx in df.index:
+            tech, ctype, node, y_inv = idx[0], idx[1], idx[2], idx[3]
+            try:
+                if tech not in tech_cache:
+                    lt = float(np.squeeze(
+                        params.depreciation_time.sel(set_technologies=tech).values
+                    ))
+                    af = ((1.0 + r) ** lt * r) / ((1.0 + r) ** lt - 1.0) if r != 0 else 1.0 / lt
+                    tech_cache[tech] = (af, max(int(np.floor(lt / dy)), 1))
+                af, n_periods = tech_cache[tech]
+
+                pay_years = [y for y in years if y_inv <= y <= y_inv + n_periods - 1]
+                discount_sum = sum(discount_factors[y] for y in pay_years)
+                scaling = af * discount_sum
+                if scaling <= 0:
+                    result.append(np.nan)
+                    continue
+
+                cs = capex_lookup.get((tech, ctype, node, y_inv),
+                     capex_lookup.get((tech, node, y_inv), np.nan))
+                if np.isnan(cs):
+                    result.append(np.nan)
+                    continue
+
+                elec_value = 0.0
+                for y in pay_years:
+                    mask = (
+                        (dual_series.index.get_level_values(0) == tech)
+                        & (dual_series.index.get_level_values(1) == ctype)
+                        & (dual_series.index.get_level_values(2) == node)
+                        & (dual_series.index.get_level_values(3) == y)
+                    )
+                    matches = dual_series[mask]
+                    if matches.empty:
+                        elec_value = np.nan
+                        break
+                    elec_value += -float(matches.iloc[0])
+
+                result.append(np.nan if np.isnan(elec_value) else cs - elec_value / scaling)
+
+            except Exception:
+                result.append(np.nan)
+
+        return result
+
+    def save_capacity_addition_analysis(self):
+        """Saves capacity_addition values and capex-equivalent reduced costs to CSV.
+
+        Output: <output_dir>/capacity_addition_analysis.csv
+
+        Columns:
+          value                          optimal capacity addition [GW]
+          reduced_cost                   Gurobi RC attribute [model units]
+          rc_capex_equivalent            dual-based RC [model units]
+          rc_capex_equivalent_input_units dual-based RC [Euro/kW]
+
+        rc_capex_equivalent_input_units answers:
+          "By how much must capex decrease for this technology to become optimal?"
+          = 0 for built technologies, > 0 for unbuilt technologies.
+
+        Requires Primal Simplex (Method=0) for exact duals. See main_rc.py.
+        """
+        if "capacity_addition" not in self.model.variables:
+            logging.info("capacity_addition variable not found — skipping RC analysis")
+            return
+
+        var_values = self.model.solution["capacity_addition"]
+        df = var_values.to_series().dropna().to_frame("value")
+        if df.empty:
+            logging.warning("No capacity_addition data to save")
+            return
+
+        unit = self.vars.units.get("capacity_addition", "") if hasattr(self.vars, "units") else ""
+        df["unit"] = unit
+
+        # Gurobi RC attribute (exact with Simplex, mu/x noise with Barrier+no Crossover)
+        if self.solver.name == "gurobi":
+            try:
+                rc_arr = self.model.variables["capacity_addition"].get_solver_attribute("RC")
+                if self.solver.use_scaling:
+                    var_labels = self.model.variables["capacity_addition"].labels.data
+                    rc_arr = rc_arr * self.optimization_setup.scaling.D_c_inv[var_labels]
+                df["reduced_cost"] = rc_arr.to_series()
+            except Exception as e:
+                logging.debug(f"Could not retrieve Gurobi RC: {e}")
+                df["reduced_cost"] = np.nan
+        else:
+            df["reduced_cost"] = np.nan
+
+        # Dual-based capex-equivalent RC — primary reliable metric
+        try:
+            df["rc_capex_equivalent"] = self._compute_rc_capex_equivalent(df)
+        except Exception as e:
+            logging.warning(f"Could not compute rc_capex_equivalent: {e}")
+            df["rc_capex_equivalent"] = np.nan
+
+        # Convert to input units (Euro/kW): invert the fraction_year scaling
+        # ZEN-garden stores capex_specific internally as input_value * fraction_year,
+        # so dividing by fraction_year recovers the original Euro/kW unit.
+        try:
+            fraction_year = (
+                self.system.unaggregated_time_steps_per_year
+                / self.system.total_hours_per_year
+            )
+            df["rc_capex_equivalent_input_units"] = df["rc_capex_equivalent"] / fraction_year
+        except Exception as e:
+            logging.warning(f"Could not compute rc_capex_equivalent_input_units: {e}")
+            df["rc_capex_equivalent_input_units"] = np.nan
+
+        try:
+            df["rc_reliability"] = self._compute_rc_reliability(df)
+        except Exception as e:
+            logging.warning(f"Could not compute rc_reliability: {e}")
+            df["rc_reliability"] = "unknown"
+
+        df = df[["unit", "value", "reduced_cost",
+                 "rc_capex_equivalent", "rc_capex_equivalent_input_units",
+                 "rc_reliability"]]
+
+        csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
+        df.to_csv(csv_file)
+        logging.info(f"Capacity addition analysis saved to {csv_file}")
+
+    def _compute_rc_reliability(self, df):
+        """Classifies RC reliability per technology row based on OPEX/CAPEX ratio and fuel inputs.
+
+        Returns a list of strings: 'high', 'medium', 'low', or 'unknown'.
+
+        high   — CAPEX-dominated, no expensive fuel input (opex_ratio < 0.3)
+        medium — Moderate OPEX or electricity-only input with higher fixed OPEX
+        low    — Expensive fuel input (gas, coal, oil, biomass, ...) contaminates dual
+        unknown — Parameters missing or not computable
+        """
+        params = self.optimization_setup.parameters
+        r = float(params.discount_rate)
+
+        FUEL_CARRIERS = {
+            "natural_gas", "hard_coal", "lignite", "lignite_coal", "oil", "diesel", "petrol",
+            "gasoline", "kerosene", "naphtha", "biomass", "waste", "ammonia", "methanol",
+            "hydrogen",
+        }
+        CHEAP_FUEL = {"uranium"}
+        ELEC_CARRIERS = {"electricity"}
+
+        def annuity(lt):
+            if not lt or lt <= 0:
+                return float("nan")
+            return (r * (1 + r) ** lt) / ((1 + r) ** lt - 1)
+
+        tech_cache = {}
+        result = []
+
+        for idx in df.index:
+            tech = idx[0]
+            try:
+                if tech not in tech_cache:
+                    lt = float(np.squeeze(
+                        params.depreciation_time.sel(set_technologies=tech).values
+                    ))
+                    af = annuity(lt)
+
+                    # CAPEX (try conversion, storage, transport)
+                    capex = None
+                    for attr in ["capex_specific_conversion", "capex_specific_storage",
+                                 "capex_per_distance_transport"]:
+                        p = getattr(params, attr, None)
+                        if p is None:
+                            continue
+                        try:
+                            capex = float(np.squeeze(
+                                p.sel(set_technologies=tech).mean().values
+                            ))
+                            break
+                        except Exception:
+                            continue
+
+                    opex_f = None
+                    p = getattr(params, "opex_specific_fixed", None)
+                    if p is not None:
+                        try:
+                            opex_f = float(np.squeeze(
+                                p.sel(set_technologies=tech).mean().values
+                            ))
+                        except Exception:
+                            pass
+
+                    capex_ann = capex * af if (capex and not np.isnan(af)) else float("nan")
+                    opex_ratio = (opex_f / capex_ann
+                                  if opex_f is not None and capex_ann > 0
+                                  and not np.isnan(capex_ann)
+                                  else float("nan"))
+
+                    # Input carriers
+                    input_carriers = set()
+                    try:
+                        es = self.optimization_setup.energy_system
+                        for carrier in es.set_carriers:
+                            if hasattr(es, "set_input_carriers"):
+                                if tech in es.set_input_carriers and carrier in es.set_input_carriers[tech]:
+                                    input_carriers.add(carrier)
+                    except Exception:
+                        pass
+
+                    fuel_flag = bool(input_carriers & FUEL_CARRIERS)
+                    cheap_fuel_flag = bool((input_carriers & CHEAP_FUEL) and not fuel_flag)
+                    elec_flag = bool(input_carriers & ELEC_CARRIERS)
+
+                    tech_cache[tech] = (opex_ratio, fuel_flag, cheap_fuel_flag, elec_flag)
+
+                opex_ratio, fuel_flag, cheap_fuel_flag, elec_flag = tech_cache[tech]
+
+                if np.isnan(opex_ratio):
+                    rel = "unknown"
+                elif fuel_flag:
+                    rel = "low"
+                elif cheap_fuel_flag:
+                    rel = "medium"
+                elif elec_flag and opex_ratio > 0.35:
+                    rel = "medium"
+                elif opex_ratio < 0.3:
+                    rel = "high"
+                elif opex_ratio < 0.5:
+                    rel = "medium"
+                else:
+                    rel = "low"
+
+                result.append(rel)
+
+            except Exception:
+                result.append("unknown")
+
+        return result
+
+    # ---------------------------------------------------------------------------
+    # Boundary shadow prices
+    # ---------------------------------------------------------------------------
+
+    # Constraints that represent system boundaries, with metadata
+    _BOUNDARY_CONSTRAINTS = {
+        "constraint_carbon_emissions_annual_limit": {
+            "cluster": "CO2_cap",
+            "description": "Annual CO2 emissions limit",
+            "shadow_price_unit": "Euro/tCO2",
+        },
+        "constraint_carbon_emissions_budget": {
+            "cluster": "CO2_cap",
+            "description": "Cumulative CO2 budget over horizon",
+            "shadow_price_unit": "Euro/tCO2",
+        },
+        "constraint_technology_capacity_limit_not_reached": {
+            "cluster": "capacity_limit",
+            "description": "Technology/node capacity upper bound (limit not yet reached)",
+            "shadow_price_unit": "Euro/GW",
+        },
+        "constraint_technology_capacity_limit_reached": {
+            "cluster": "capacity_limit",
+            "description": "Technology/node capacity upper bound (limit reached)",
+            "shadow_price_unit": "Euro/GW",
+        },
+        "constraint_availability_import": {
+            "cluster": "import_availability",
+            "description": "Hourly carrier import limit from outside system",
+            "shadow_price_unit": "Euro/GWh",
+        },
+        "constraint_availability_export": {
+            "cluster": "import_availability",
+            "description": "Hourly carrier export limit outside system",
+            "shadow_price_unit": "Euro/GWh",
+        },
+        "constraint_availability_import_yearly": {
+            "cluster": "import_availability",
+            "description": "Annual carrier import limit from outside system",
+            "shadow_price_unit": "Euro/GWh",
+        },
+        "constraint_availability_export_yearly": {
+            "cluster": "import_availability",
+            "description": "Annual carrier export limit outside system",
+            "shadow_price_unit": "Euro/GWh",
+        },
+        "constraint_technology_diffusion_limit": {
+            "cluster": "diffusion_limit",
+            "description": "Technology annual capacity addition growth rate cap",
+            "shadow_price_unit": "Euro/GW",
+        },
+        "constraint_technology_diffusion_limit_total": {
+            "cluster": "diffusion_limit",
+            "description": "Global technology deployment growth rate cap",
+            "shadow_price_unit": "Euro/GW",
+        },
+    }
+
+    def save_boundary_shadow_prices(self):
+        """Exports shadow prices of system boundary constraints to CSV.
+
+        Only constraints with non-zero (binding) duals are included.
+
+        Output: <output_dir>/boundary_shadow_prices.csv
+
+        Columns:
+          constraint        constraint name
+          cluster           boundary type (CO2_cap, capacity_limit, import_availability,
+                            diffusion_limit)
+          description       plain-text explanation
+          shadow_price_unit unit of shadow price in input terms
+          shadow_price      dual value [model units]
+          shadow_price_input_units  dual value rescaled to input units
+          ... (index columns from the constraint)
+        """
+        if not self.solver.save_duals:
+            logging.info("Duals not saved — skipping boundary shadow price export")
+            return
+
+        fraction_year = None
+        try:
+            fraction_year = (
+                self.system.unaggregated_time_steps_per_year
+                / self.system.total_hours_per_year
+            )
+        except Exception:
+            pass
+
+        all_rows = []
+
+        for con_name, meta in self._BOUNDARY_CONSTRAINTS.items():
+            if con_name not in self.model.constraints:
+                continue
+
+            arr = self.model.constraints[con_name].dual
+            if self.solver.use_scaling:
+                try:
+                    labels = self.model.constraints[con_name].labels.data
+                    arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+                except Exception:
+                    pass
+
+            try:
+                series = arr.to_series().dropna()
+            except Exception:
+                continue
+
+            # Keep only binding constraints (non-zero dual)
+            series = series[series != 0]
+            if series.empty:
+                continue
+
+            for idx, dual_val in series.items():
+                if not isinstance(idx, tuple):
+                    idx = (idx,)
+
+                # Shadow price in input units: capacity constraints → divide by fraction_year
+                # CO2 constraints are already in Euro/tCO2 (no time-step scaling needed)
+                if fraction_year and meta["cluster"] != "CO2_cap":
+                    sp_input = dual_val / fraction_year
+                else:
+                    sp_input = dual_val
+
+                row = {
+                    "constraint":              con_name,
+                    "cluster":                 meta["cluster"],
+                    "description":             meta["description"],
+                    "shadow_price_unit":       meta["shadow_price_unit"],
+                    "shadow_price":            dual_val,
+                    "shadow_price_input_units": sp_input,
+                }
+                # Unpack index into named columns
+                for i, v in enumerate(idx):
+                    row[f"index_{i}"] = v
+
+                all_rows.append(row)
+
+        if not all_rows:
+            logging.info("No binding boundary constraints found — boundary_shadow_prices.csv not written")
+            return
+
+        import pandas as pd
+        out_df = pd.DataFrame(all_rows)
+        csv_file = self.name_dir.joinpath("boundary_shadow_prices.csv")
+        out_df.to_csv(csv_file, index=False)
+        logging.info(f"Boundary shadow prices saved to {csv_file} ({len(all_rows)} binding constraints)")
 
     def save_system(self):
         """Saves the system dict as json."""
