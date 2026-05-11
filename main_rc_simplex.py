@@ -33,8 +33,10 @@ DATASETS = {
     "small":  os.path.join("ZEN-models", "data", "Crystal_Ball_small", "data", "Crystal_Ball"),
     "dechat":   os.path.join("ZEN-models", "data", "Crystal_Ball_DECHAT"),
     "extended": "5_multiple_extended",
+    "extended_cb": "5_multiple_extended_cb",
+    "extended_cb_v2": "5_multiple_extended_cb_v2",
 }
-DATASET = DATASETS["extended"]
+DATASET = DATASETS["extended_cb_v2"]
 
 now = datetime.now().strftime("%Y%m%d-%H%M%S")
 result_folder = f"./outputs_{now}/rc_analysis"
