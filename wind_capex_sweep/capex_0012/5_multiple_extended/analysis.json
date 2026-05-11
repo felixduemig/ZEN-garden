@@ -1,0 +1,52 @@
+{
+  "dataset": "5_multiple_extended",
+  "objective": "total_cost",
+  "sense": "min",
+  "subsets": {
+    "set_carriers": [],
+    "set_technologies": {
+      "set_conversion_technologies": [
+        "set_retrofitting_technologies"
+      ],
+      "set_transport_technologies": [],
+      "set_storage_technologies": []
+    }
+  },
+  "header_data_inputs": {
+    "set_nodes": "node",
+    "set_edges": "edge",
+    "set_location": "location",
+    "set_time_steps": "time",
+    "set_time_steps_operation": "time_operation",
+    "set_time_steps_storage_level": "time_storage_level",
+    "set_time_steps_yearly": "year",
+    "set_time_steps_yearly_entire_horizon": "year_entire_horizon",
+    "set_carriers": "carrier",
+    "set_input_carriers": "carrier",
+    "set_output_carriers": "carrier",
+    "set_time_steps_storage": "time_storage_level",
+    "set_dependent_carriers": "carrier",
+    "set_elements": "element",
+    "set_conversion_technologies": "technology",
+    "set_transport_technologies": "technology",
+    "set_transport_technologies_loss_exponential": "technology",
+    "set_storage_technologies": "technology",
+    "set_technologies": "technology",
+    "set_technologies_existing": "technology_existing",
+    "set_capacity_types": "capacity_type"
+  },
+  "time_series_aggregation": {
+    "clusterMethod": "hierarchical",
+    "solver": "highs",
+    "hoursPerPeriod": 1,
+    "extremePeriodMethod": "None",
+    "rescaleClusterPeriods": false,
+    "representationMethod": "meanRepresentation",
+    "resolution": 1
+  },
+  "folder_output": "wind_capex_sweep\\capex_0012",
+  "overwrite_output": true,
+  "output_format": "h5",
+  "earliest_year_of_data": 1900,
+  "zen_garden_version": "2.9.7"
+}

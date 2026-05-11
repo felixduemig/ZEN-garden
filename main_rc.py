@@ -1,10 +1,15 @@
 """
 RC Analysis Run
 ===============
-Runs the model as a pure LP with Primal Simplex (Method=0).
-Primal Simplex lands on an LP vertex, giving exact duals for all constraints.
+Runs the model as a pure LP with Homogeneous Barrier (Method=2, BarHomogeneous=1,
+Crossover=0).
 
-The exact duals of constraint_technology_lifetime are used to compute
+Homogeneous Barrier solves a self-dual extended problem — numerically stable even
+for poorly-scaled models, and does not require a feasible starting point.
+Crossover is disabled: duals come from the interior-point solution, which is a
+weighted average over all optimal vertices. Acceptable for exploratory RC analysis.
+
+The duals of constraint_technology_lifetime are used to compute
 rc_capex_equivalent_input_units [Euro/kW] — the capex reduction needed
 for each technology to become optimal.
 
@@ -24,8 +29,17 @@ from zen_garden import run
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
 
-#DATASET = "5_multiple_time_steps_per_year"
-DATASET = "ZEN-models\data\Crystal_Ball"
+# Dataset path — either:
+#   a) just the folder name if the dataset sits directly in BASE_DIR
+#   b) a relative path from BASE_DIR (e.g. ZEN-models/data/Crystal_Ball)
+#   c) an absolute path
+DATASETS = {
+    "toy":         "5_multiple_time_steps_per_year",
+    "full":        os.path.join("ZEN-models", "data", "Crystal_Ball"),
+    "small":       os.path.join("ZEN-models", "data", "Crystal_Ball_small", "data", "Crystal_Ball"),
+    "dechat":      os.path.join("ZEN-models", "data", "Crystal_Ball_DECHAT"),
+}
+DATASET = DATASETS["toy"]
 
 now = datetime.now().strftime("%Y%m%d-%H%M%S")
 result_folder = f"./outputs_{now}/rc_analysis"
@@ -37,18 +51,19 @@ with open("./config.json") as f:
 # Pure LP — no mean-variance plugin
 config.pop("plugins", None)
 
-# Primal Simplex: lands on an LP vertex → exact duals and reduced costs
-# Presolve=0: prevents Gurobi from eliminating variables before solving,
-#             which can suppress dual output for some constraints
+# Barrier + Crossover: fast interior-point solve, then crossover to LP vertex
+# → exact duals identical to Simplex, typically 10-100x faster on large models
 config.setdefault("solver", {})
 config["solver"].setdefault("solver_options", {})
 
 config["solver"]["name"] = "gurobi"
 config["solver"]["save_duals"] = True
 config["solver"]["save_reduced_costs"] = True
-config["solver"]["solver_options"]["Method"] = 0
-config["solver"]["solver_options"]["Presolve"] = 0
-config["solver"]["solver_options"].pop("Crossover", None)
+# Homogeneous Barrier: numerically stable, no feasible start needed, no crossover
+config["solver"]["solver_options"]["Method"] = 0         # Barrier
+#config["solver"]["solver_options"]["BarHomogeneous"] = 1  # Homogeneous algorithm
+config["solver"]["solver_options"]["Crossover"] = 1      # Interior-point duals, no vertex projection
+#config["solver"]["solver_options"].pop("Presolve", None)  # Let Gurobi presolve reduce problem
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")
 
 tmp_config = "./config_rc_tmp.json"

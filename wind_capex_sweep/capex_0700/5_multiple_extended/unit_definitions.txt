@@ -1,0 +1,3 @@
+Euro = [currency] = EURO = Eur = €
+year = 365 * day = a = yr = julian_year
+ton = metric_ton

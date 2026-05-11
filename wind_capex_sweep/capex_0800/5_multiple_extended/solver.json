@@ -1,0 +1,36 @@
+{
+  "name": "gurobi",
+  "solver_options": {
+    "Method": 0,
+    "Presolve": 0,
+    "LogFile": "wind_capex_sweep\\capex_0800\\solver.log"
+  },
+  "check_unit_consistency": true,
+  "solver_dir": "wind_capex_sweep\\capex_0800",
+  "keep_files": false,
+  "io_api": "lp",
+  "save_duals": true,
+  "save_reduced_costs": true,
+  "save_parameters": true,
+  "selected_saved_parameters": [],
+  "selected_saved_variables": [],
+  "selected_saved_duals": [],
+  "selected_saved_reduced_costs": [],
+  "linear_regression_check": {
+    "eps_intercept": 0.1,
+    "epsRvalue": 0.99999
+  },
+  "round_parameters": false,
+  "rounding_decimal_points_units": 6,
+  "rounding_decimal_points_capacity": 4,
+  "rounding_decimal_points_tsa": 4,
+  "analyze_numerics": true,
+  "run_diagnostics": false,
+  "use_scaling": true,
+  "scaling_include_rhs": true,
+  "scaling_algorithm": [
+    "geom",
+    "geom",
+    "geom"
+  ]
+}

@@ -597,14 +597,19 @@ class Postprocess:
         Output: <output_dir>/capacity_addition_analysis.csv
 
         Columns:
-          value                          optimal capacity addition [GW]
-          reduced_cost                   Gurobi RC attribute [model units]
-          rc_capex_equivalent            dual-based RC [model units]
-          rc_capex_equivalent_input_units dual-based RC [Euro/kW]
+          value                            optimal capacity addition [GW]
+          reduced_cost                     Gurobi RC attribute [model units]
+          rc_capex_equivalent              dual-based RC [model units]
+          rc_capex_equivalent_input_units  dual-based RC [Euro/kW installed]
+          rc_capex_equivalent_per_kw_eff   dual-based RC [Euro/kW_eff]
 
         rc_capex_equivalent_input_units answers:
           "By how much must capex decrease for this technology to become optimal?"
           = 0 for built technologies, > 0 for unbuilt technologies.
+
+        rc_capex_equivalent_per_kw_eff answers the same question but normalised
+        by mean max_load, making technologies with different capacity factors
+        comparable on a common effective-capacity basis.
 
         Requires Primal Simplex (Method=0) for exact duals. See main_rc.py.
         """
@@ -661,9 +666,20 @@ class Postprocess:
             logging.warning(f"Could not compute rc_reliability: {e}")
             df["rc_reliability"] = "unknown"
 
+        # RC per kW of effective capacity: rc_input_units / max_load
+        # Answers: "by how much must capex fall per kW of actually usable output?"
+        # Unlike rc_capex_equivalent_input_units (per kW installed), this normalises
+        # for technologies with different capacity factors (max_load), making them
+        # comparable on a common basis.
+        try:
+            df["rc_capex_equivalent_per_kw_eff"] = self._compute_rc_per_kw_eff(df)
+        except Exception as e:
+            logging.warning(f"Could not compute rc_capex_equivalent_per_kw_eff: {e}")
+            df["rc_capex_equivalent_per_kw_eff"] = np.nan
+
         df = df[["unit", "value", "reduced_cost",
                  "rc_capex_equivalent", "rc_capex_equivalent_input_units",
-                 "rc_reliability"]]
+                 "rc_capex_equivalent_per_kw_eff", "rc_reliability"]]
 
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
         df.to_csv(csv_file)
@@ -776,6 +792,46 @@ class Postprocess:
 
             except Exception:
                 result.append("unknown")
+
+        return result
+
+    def _compute_rc_per_kw_eff(self, df):
+        """Returns rc_capex_equivalent_input_units divided by mean max_load per (tech, node).
+
+        Normalises the RC from Euro/kW_installed to Euro/kW_eff, where
+        kW_eff = max_load * kW_installed.  This makes technologies with different
+        capacity factors comparable: a technology with max_load=0.35 only delivers
+        35 % of its rated capacity, so its effective cost per usable kW is
+        capex / max_load.  Dividing the RC by the same factor gives the required
+        capex reduction expressed in those same effective-capacity terms.
+
+        max_load is averaged over all time steps (constant in most datasets).
+        Returns nan when max_load is zero or unavailable.
+        """
+        params = self.optimization_setup.parameters
+        result = []
+        cache = {}
+
+        for idx, row in df.iterrows():
+            tech, _ctype, node = idx[0], idx[1], idx[2]
+            rc_val = row.get("rc_capex_equivalent_input_units", np.nan)
+
+            key = (tech, node)
+            if key not in cache:
+                try:
+                    ml_arr = params.max_load.sel(
+                        set_technologies=tech, set_location=node
+                    )
+                    ml = float(ml_arr.mean().values)
+                except Exception:
+                    ml = float("nan")
+                cache[key] = ml
+
+            ml = cache[key]
+            if np.isnan(rc_val) or np.isnan(ml) or ml <= 0:
+                result.append(np.nan)
+            else:
+                result.append(rc_val / ml)
 
         return result
 
