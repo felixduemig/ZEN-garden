@@ -484,15 +484,22 @@ class Postprocess:
         )
 
     def _compute_rc_capex_equivalent(self, df):
-        """Computes the capex-equivalent reduced cost from constraint_technology_lifetime duals.
+        """Computes the capex-equivalent reduced cost from constraint duals.
 
         Uses the LP optimality condition for capacity_addition at its lower bound:
 
-            rc_capex_equiv = capex_specific - elec_value / scaling
+            rc_capex_equiv = capex_specific - (elec_value - diff_contribution) / scaling
 
         where:
-            elec_value = sum(-dual_lifetime[y] for y in pay_years)
-            scaling    = annuity_factor * sum(discount_factor[y] for y in pay_years)
+            elec_value       = sum(-dual_lifetime[y] for y in pay_years)
+            diff_contribution = sum(mu_diff[y] * tdr[y] * kdr[y, y_inv]
+                                    for y in years if y > y_inv)
+            scaling          = annuity_factor * sum(discount_factor[y] for y in pay_years)
+
+        The diff_contribution captures that capacity_addition[y_inv] appears in all
+        *future* diffusion constraints (y > y_inv) as part of the knowledge base, with
+        coefficient -tdr[y]*kdr[y,y_inv].  If those constraints are binding their duals
+        mu_diff[y] != 0 and contribute to the RC even when capacity_addition[y_inv] = 0.
 
         With Primal Simplex (Method=0) the duals are exact LP duals — no approximation.
 
@@ -525,6 +532,23 @@ class Postprocess:
             dual_arr = dual_arr * self.optimization_setup.scaling.D_r_inv[cons_labels]
         dual_series = dual_arr.to_series().dropna()
 
+        # Duals from diffusion constraints — capacity_addition[y_inv] appears in future
+        # diffusion constraints for y > y_inv with coefficient -tdr[y]*kdr[y,y_inv]
+        diff_total_series = None
+        diff_an_series = None
+        if "constraint_technology_diffusion_limit_total" in self.model.constraints:
+            arr = self.model.constraints["constraint_technology_diffusion_limit_total"].dual
+            if self.solver.use_scaling:
+                labels = self.model.constraints["constraint_technology_diffusion_limit_total"].labels.data
+                arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+            diff_total_series = arr.to_series().dropna()
+        if "constraint_technology_diffusion_limit" in self.model.constraints:
+            arr = self.model.constraints["constraint_technology_diffusion_limit"].dual
+            if self.solver.use_scaling:
+                labels = self.model.constraints["constraint_technology_diffusion_limit"].labels.data
+                arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+            diff_an_series = arr.to_series().dropna()
+
         # Internal capex_specific lookup: (tech, ctype, node, year) -> value
         capex_lookup = {}
         for param_name in ["capex_specific_conversion", "capex_specific_storage",
@@ -544,6 +568,7 @@ class Postprocess:
                 continue
 
         tech_cache = {}
+        diff_param_cache = {}  # tech -> (kdr_rate, spillover_rate)
         result = []
 
         for idx in df.index:
@@ -579,12 +604,98 @@ class Postprocess:
                         & (dual_series.index.get_level_values(3) == y)
                     )
                     matches = dual_series[mask]
-                    if matches.empty:
-                        elec_value = np.nan
-                        break
-                    elec_value += -float(matches.iloc[0])
+                    if not matches.empty:
+                        elec_value += -float(matches.iloc[0])
+                    # else: dual is NaN (LP degenerate when diffusion constraint is
+                    # binding — the lifetime constraint is not the active bound).
+                    # Treat as 0; the value is captured by diff_contribution below.
 
-                result.append(np.nan if np.isnan(elec_value) else cs - elec_value / scaling)
+                # Diffusion dual contribution: capacity_addition[y_inv] appears in future
+                # diffusion constraints (y > y_inv) with coefficient -tdr[y]*kdr[y,y_inv].
+                # The RC contribution from constraint y is: mu_diff[y] * tdr[y] * kdr[y,y_inv].
+                # (mu_diff <= 0 for binding <= constraints; tdr,kdr > 0 => contribution < 0,
+                #  i.e. building now relaxes future diffusion limits and lowers the RC.)
+                
+                diff_contribution = 0.0
+                """
+                future_years = [y for y in years if y > y_inv]
+                if future_years and (diff_total_series is not None or diff_an_series is not None):
+                    if tech not in diff_param_cache:
+                        try:
+                            kdr_rate = float(np.squeeze(
+                                params.knowledge_depreciation_rate.sel(
+                                    set_technologies=tech).values))
+                        except Exception:
+                            kdr_rate = 0.0
+                        try:
+                            sr = float(np.squeeze(
+                                params.knowledge_spillover_rate.sel(
+                                    set_technologies=tech).values))
+                        except Exception:
+                            sr = np.inf
+                        diff_param_cache[tech] = (kdr_rate, sr)
+                    kdr_rate, sr = diff_param_cache[tech]
+
+                    for y_fut in future_years:
+                        # kdr: knowledge decay from y_inv to y_fut
+                        # exponent = interval * (y_fut - 1 - y_inv) matching technology.py
+                        kdr_val = (1.0 - kdr_rate) ** (dy * (y_fut - 1 - y_inv))
+
+                        try:
+                            mdr_fut = float(np.squeeze(
+                                params.max_diffusion_rate.sel(
+                                    set_technologies=tech,
+                                    set_time_steps_yearly=y_fut).values))
+                        except Exception:
+                            continue
+                        tdr_fut = (1.0 + mdr_fut) ** dy - 1.0
+                        if tdr_fut <= 0:
+                            continue
+
+                        coeff = tdr_fut * kdr_val
+
+                        # constraint_technology_diffusion_limit_total (no spillover, same node)
+                        if diff_total_series is not None:
+                            mask = (
+                                (diff_total_series.index.get_level_values(0) == tech)
+                                & (diff_total_series.index.get_level_values(1) == ctype)
+                                & (diff_total_series.index.get_level_values(2) == node)
+                                & (diff_total_series.index.get_level_values(3) == y_fut)
+                            )
+                            if mask.any():
+                                diff_contribution += float(diff_total_series[mask].iloc[0]) * coeff
+
+                        # constraint_technology_diffusion_limit (with spillover)
+                        if diff_an_series is not None and not np.isinf(sr):
+                            # same-node contribution (coefficient = tdr * 1 * kdr)
+                            mask_sn = (
+                                (diff_an_series.index.get_level_values(0) == tech)
+                                & (diff_an_series.index.get_level_values(1) == ctype)
+                                & (diff_an_series.index.get_level_values(2) == node)
+                                & (diff_an_series.index.get_level_values(3) == y_fut)
+                            )
+                            if mask_sn.any():
+                                diff_contribution += float(diff_an_series[mask_sn].iloc[0]) * coeff
+
+                            # cross-node contribution (coefficient = tdr * sr * kdr)
+                            for other_node in diff_an_series.index.get_level_values(2).unique():
+                                if other_node == node:
+                                    continue
+                                mask_cn = (
+                                    (diff_an_series.index.get_level_values(0) == tech)
+                                    & (diff_an_series.index.get_level_values(1) == ctype)
+                                    & (diff_an_series.index.get_level_values(2) == other_node)
+                                    & (diff_an_series.index.get_level_values(3) == y_fut)
+                                )
+                                if mask_cn.any():
+                                    diff_contribution += (
+                                        float(diff_an_series[mask_cn].iloc[0]) * tdr_fut * sr * kdr_val
+                                    )
+                """
+                result.append(
+                    np.nan if np.isnan(elec_value)
+                    else cs - (elec_value - diff_contribution) / scaling
+                )
 
             except Exception:
                 result.append(np.nan)

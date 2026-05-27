@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"C:\\\\Users\\\\felix\\\\Documents\\\\GitHub\\\\OptML\\\\Optimization Project Files\")",
+      "Bash(pip show *)"
+    ]
+  }
+}
