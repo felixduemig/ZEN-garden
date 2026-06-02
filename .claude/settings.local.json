@@ -2,7 +2,22 @@
   "permissions": {
     "allow": [
       "Bash(ls \"C:\\\\Users\\\\felix\\\\Documents\\\\GitHub\\\\OptML\\\\Optimization Project Files\")",
-      "Bash(pip show *)"
+      "Bash(pip show *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\felix\\\\Documents\\\\GitHub\\\\ZEN-garden\" -Directory)",
+      "Bash(Select-Object -ExpandProperty Name)",
+      "Bash(\"C:\\\\Users\\\\felix\\\\anaconda3\\\\envs\\\\zen-garden-env\\\\python.exe\" main_rc_simplex.py)",
+      "Bash(where python *)",
+      "Bash(\"C:\\\\Users\\\\felix\\\\anaconda3\\\\envs\\\\zen-garden-env\\\\python.exe\" -c \"import zen_garden; print\\('zen-garden found'\\)\")",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\felix\\\\Documents\\\\GitHub\\\\ZEN-garden\\\\6_cb_rc_model\" -Recurse -Force)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Sort-Object)",
+      "Bash(dir /B /S \"C:\\\\Users\\\\felix\\\\Documents\\\\GitHub\\\\ZEN-garden\\\\5_multiple_extended_cb_v2_capex_test\")",
+      "Bash(findstr /V \".pyc\")",
+      "Bash(findstr /V \"__pycache__\")",
+      "Bash(find \"C:/Users/felix/Documents/GitHub/OptML/OptML_CNN_project\" -type f | head -60)",
+      "PowerShell(conda run -n cnn_project pip install torch torchvision numpy scipy scikit-learn matplotlib optuna 2>&1)",
+      "Bash(ls tasks/task_0_baseline_cnn/results_local)",
+      "Bash(ls tasks/task_1_hyperparameter/results)"
     ]
   }
 }

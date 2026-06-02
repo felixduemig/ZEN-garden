@@ -35,8 +35,11 @@ DATASETS = {
     "extended": "5_multiple_extended",
     "extended_cb": "5_multiple_extended_cb",
     "extended_cb_v2": "5_multiple_extended_cb_v2",
+    "capex_test":     "5_multiple_extended_cb_v2_capex_test",
+    "cb_rc":          "6_cb_rc_model",
+    "greenfield":     "7_cb_greenfield_2050",
 }
-DATASET = DATASETS["extended_cb_v2"]
+DATASET = DATASETS["full"]
 
 now = datetime.now().strftime("%Y%m%d-%H%M%S")
 result_folder = f"./outputs_{now}/rc_analysis"
@@ -53,8 +56,9 @@ config["solver"].setdefault("solver_options", {})
 config["solver"]["name"] = "gurobi"
 config["solver"]["save_duals"] = True
 config["solver"]["save_reduced_costs"] = True
-config["solver"]["solver_options"]["Method"] = 0    # Primal Simplex
-config["solver"]["solver_options"]["Presolve"] = 0  # must be 0 â€” presolve suppresses duals
+config["solver"]["solver_options"]["Method"] = -1    # Primal Simplex
+config["solver"]["use_scaling"] = 0   
+config["solver"]["solver_options"]["Presolve"] = 0  # must be 0 presolve suppresses duals
 config["solver"]["solver_options"].pop("Crossover", None)
 config["solver"]["solver_options"].pop("BarHomogeneous", None)
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")

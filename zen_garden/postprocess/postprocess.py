@@ -617,7 +617,6 @@ class Postprocess:
                 #  i.e. building now relaxes future diffusion limits and lowers the RC.)
                 
                 diff_contribution = 0.0
-                """
                 future_years = [y for y in years if y > y_inv]
                 if future_years and (diff_total_series is not None or diff_an_series is not None):
                     if tech not in diff_param_cache:
@@ -654,13 +653,13 @@ class Postprocess:
 
                         coeff = tdr_fut * kdr_val
 
-                        # constraint_technology_diffusion_limit_total (no spillover, same node)
+                        # constraint_technology_diffusion_limit_total is summed over all nodes
+                        # → index is (tech, ctype, year), no node dimension
                         if diff_total_series is not None:
                             mask = (
                                 (diff_total_series.index.get_level_values(0) == tech)
                                 & (diff_total_series.index.get_level_values(1) == ctype)
-                                & (diff_total_series.index.get_level_values(2) == node)
-                                & (diff_total_series.index.get_level_values(3) == y_fut)
+                                & (diff_total_series.index.get_level_values(2) == y_fut)
                             )
                             if mask.any():
                                 diff_contribution += float(diff_total_series[mask].iloc[0]) * coeff
@@ -691,7 +690,6 @@ class Postprocess:
                                     diff_contribution += (
                                         float(diff_an_series[mask_cn].iloc[0]) * tdr_fut * sr * kdr_val
                                     )
-                """
                 result.append(
                     np.nan if np.isnan(elec_value)
                     else cs - (elec_value - diff_contribution) / scaling
@@ -771,12 +769,6 @@ class Postprocess:
             logging.warning(f"Could not compute rc_capex_equivalent_input_units: {e}")
             df["rc_capex_equivalent_input_units"] = np.nan
 
-        try:
-            df["rc_reliability"] = self._compute_rc_reliability(df)
-        except Exception as e:
-            logging.warning(f"Could not compute rc_reliability: {e}")
-            df["rc_reliability"] = "unknown"
-
         # RC per kW of effective capacity: rc_input_units / max_load
         # Answers: "by how much must capex fall per kW of actually usable output?"
         # Unlike rc_capex_equivalent_input_units (per kW installed), this normalises
@@ -790,121 +782,13 @@ class Postprocess:
 
         df = df[["unit", "value", "reduced_cost",
                  "rc_capex_equivalent", "rc_capex_equivalent_input_units",
-                 "rc_capex_equivalent_per_kw_eff", "rc_reliability"]]
+                 "rc_capex_equivalent_per_kw_eff"]]
 
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
         df.to_csv(csv_file)
         logging.info(f"Capacity addition analysis saved to {csv_file}")
 
-    def _compute_rc_reliability(self, df):
-        """Classifies RC reliability per technology row based on OPEX/CAPEX ratio and fuel inputs.
-
-        Returns a list of strings: 'high', 'medium', 'low', or 'unknown'.
-
-        high   — CAPEX-dominated, no expensive fuel input (opex_ratio < 0.3)
-        medium — Moderate OPEX or electricity-only input with higher fixed OPEX
-        low    — Expensive fuel input (gas, coal, oil, biomass, ...) contaminates dual
-        unknown — Parameters missing or not computable
-        """
-        params = self.optimization_setup.parameters
-        r = float(params.discount_rate)
-
-        FUEL_CARRIERS = {
-            "natural_gas", "hard_coal", "lignite", "lignite_coal", "oil", "diesel", "petrol",
-            "gasoline", "kerosene", "naphtha", "biomass", "waste", "ammonia", "methanol",
-            "hydrogen",
-        }
-        CHEAP_FUEL = {"uranium"}
-        ELEC_CARRIERS = {"electricity"}
-
-        def annuity(lt):
-            if not lt or lt <= 0:
-                return float("nan")
-            return (r * (1 + r) ** lt) / ((1 + r) ** lt - 1)
-
-        tech_cache = {}
-        result = []
-
-        for idx in df.index:
-            tech = idx[0]
-            try:
-                if tech not in tech_cache:
-                    lt = float(np.squeeze(
-                        params.depreciation_time.sel(set_technologies=tech).values
-                    ))
-                    af = annuity(lt)
-
-                    # CAPEX (try conversion, storage, transport)
-                    capex = None
-                    for attr in ["capex_specific_conversion", "capex_specific_storage",
-                                 "capex_per_distance_transport"]:
-                        p = getattr(params, attr, None)
-                        if p is None:
-                            continue
-                        try:
-                            capex = float(np.squeeze(
-                                p.sel(set_technologies=tech).mean().values
-                            ))
-                            break
-                        except Exception:
-                            continue
-
-                    opex_f = None
-                    p = getattr(params, "opex_specific_fixed", None)
-                    if p is not None:
-                        try:
-                            opex_f = float(np.squeeze(
-                                p.sel(set_technologies=tech).mean().values
-                            ))
-                        except Exception:
-                            pass
-
-                    capex_ann = capex * af if (capex and not np.isnan(af)) else float("nan")
-                    opex_ratio = (opex_f / capex_ann
-                                  if opex_f is not None and capex_ann > 0
-                                  and not np.isnan(capex_ann)
-                                  else float("nan"))
-
-                    # Input carriers
-                    input_carriers = set()
-                    try:
-                        es = self.optimization_setup.energy_system
-                        for carrier in es.set_carriers:
-                            if hasattr(es, "set_input_carriers"):
-                                if tech in es.set_input_carriers and carrier in es.set_input_carriers[tech]:
-                                    input_carriers.add(carrier)
-                    except Exception:
-                        pass
-
-                    fuel_flag = bool(input_carriers & FUEL_CARRIERS)
-                    cheap_fuel_flag = bool((input_carriers & CHEAP_FUEL) and not fuel_flag)
-                    elec_flag = bool(input_carriers & ELEC_CARRIERS)
-
-                    tech_cache[tech] = (opex_ratio, fuel_flag, cheap_fuel_flag, elec_flag)
-
-                opex_ratio, fuel_flag, cheap_fuel_flag, elec_flag = tech_cache[tech]
-
-                if np.isnan(opex_ratio):
-                    rel = "unknown"
-                elif fuel_flag:
-                    rel = "low"
-                elif cheap_fuel_flag:
-                    rel = "medium"
-                elif elec_flag and opex_ratio > 0.35:
-                    rel = "medium"
-                elif opex_ratio < 0.3:
-                    rel = "high"
-                elif opex_ratio < 0.5:
-                    rel = "medium"
-                else:
-                    rel = "low"
-
-                result.append(rel)
-
-            except Exception:
-                result.append("unknown")
-
-        return result
+        self.save_rc_components()
 
     def _compute_rc_per_kw_eff(self, df):
         """Returns rc_capex_equivalent_input_units divided by mean max_load per (tech, node).
@@ -945,6 +829,219 @@ class Postprocess:
                 result.append(rc_val / ml)
 
         return result
+
+    def save_rc_components(self):
+        """Saves the per-year dual contributions to the RC to rc_components.csv.
+
+        One row per (tech, ctype, node, y_inv, constraint_type, component_year).
+
+        Columns
+        -------
+        set_technologies, set_capacity_types, set_location, set_time_steps_yearly
+            Investment dimensions — match the index of capacity_addition_analysis.csv.
+        constraint_type
+            'lifetime'        — constraint_technology_lifetime
+            'diffusion_total' — constraint_technology_diffusion_limit_total (summed over nodes)
+            'diffusion_an'    — constraint_technology_diffusion_limit (per-node, only if spillover finite)
+        component_year
+            The year index of the contributing constraint row.
+        raw_dual
+            Dual value from linopy in model units (scaled if use_scaling=True).
+        coefficient
+            Coefficient of capacity_addition[y_inv] in this constraint row.
+            1.0 for lifetime;  tdr * kdr  for diffusion.
+        discount_factor
+            δ(component_year) — only meaningful for lifetime rows (nan for diffusion).
+        scaling
+            af * Σ_y δ(y)  over the technology's pay_years — same for all rows of a
+            given (tech, y_inv) combination.
+        contribution_to_rc
+            raw_dual * coefficient / scaling.
+            Summing over all rows with the same (tech, ctype, node, y_inv) and adding
+            capex_specific reproduces rc_capex_equivalent from capacity_addition_analysis.csv.
+        """
+        if "capacity_addition" not in self.model.variables:
+            return
+        if "constraint_technology_lifetime" not in self.model.constraints:
+            return
+
+        var_values = self.model.solution["capacity_addition"]
+        df_main = var_values.to_series().dropna().to_frame("value")
+        if df_main.empty:
+            return
+
+        params = self.optimization_setup.parameters
+        system = self.optimization_setup.system
+        es = self.optimization_setup.energy_system
+
+        r = float(params.discount_rate)
+        dy = system.interval_between_years
+        years = list(es.set_time_steps_yearly)
+        first_year = years[0]
+        last_year_entire = es.set_time_steps_yearly_entire_horizon[-1]
+
+        discount_factors = {}
+        for y in years:
+            iv = 1 if y == last_year_entire else dy
+            discount_factors[y] = sum(
+                (1.0 / (1.0 + r)) ** (dy * (y - first_year) + i)
+                for i in range(iv)
+            )
+
+        # Lifetime duals
+        dual_arr = self.model.constraints["constraint_technology_lifetime"].dual
+        if self.solver.use_scaling:
+            cons_labels = self.model.constraints["constraint_technology_lifetime"].labels.data
+            dual_arr = dual_arr * self.optimization_setup.scaling.D_r_inv[cons_labels]
+        dual_series = dual_arr.to_series().dropna()
+
+        # Diffusion duals (same logic as _compute_rc_capex_equivalent)
+        diff_total_series = None
+        diff_an_series = None
+        if "constraint_technology_diffusion_limit_total" in self.model.constraints:
+            arr = self.model.constraints["constraint_technology_diffusion_limit_total"].dual
+            if self.solver.use_scaling:
+                labels = self.model.constraints["constraint_technology_diffusion_limit_total"].labels.data
+                arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+            diff_total_series = arr.to_series().dropna()
+        if "constraint_technology_diffusion_limit" in self.model.constraints:
+            arr = self.model.constraints["constraint_technology_diffusion_limit"].dual
+            if self.solver.use_scaling:
+                labels = self.model.constraints["constraint_technology_diffusion_limit"].labels.data
+                arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+            diff_an_series = arr.to_series().dropna()
+
+        rows = []
+        tech_cache = {}
+        diff_param_cache = {}
+
+        for idx in df_main.index:
+            tech, ctype, node, y_inv = idx[0], idx[1], idx[2], idx[3]
+            try:
+                if tech not in tech_cache:
+                    lt = float(np.squeeze(
+                        params.depreciation_time.sel(set_technologies=tech).values
+                    ))
+                    af = ((1.0 + r) ** lt * r) / ((1.0 + r) ** lt - 1.0) if r != 0 else 1.0 / lt
+                    tech_cache[tech] = (af, max(int(np.floor(lt / dy)), 1))
+                af, n_periods = tech_cache[tech]
+
+                pay_years = [y for y in years if y_inv <= y <= y_inv + n_periods - 1]
+                discount_sum = sum(discount_factors[y] for y in pay_years)
+                scaling = af * discount_sum
+                if scaling <= 0:
+                    continue
+
+                base = {
+                    "set_technologies":     tech,
+                    "set_capacity_types":   ctype,
+                    "set_location":         node,
+                    "set_time_steps_yearly": y_inv,
+                    "scaling":              scaling,
+                }
+
+                # ── Lifetime contributions ──────────────────────────────────
+                for y in pay_years:
+                    mask = (
+                        (dual_series.index.get_level_values(0) == tech)
+                        & (dual_series.index.get_level_values(1) == ctype)
+                        & (dual_series.index.get_level_values(2) == node)
+                        & (dual_series.index.get_level_values(3) == y)
+                    )
+                    raw_dual = float(dual_series[mask].iloc[0]) if mask.any() else np.nan
+                    rows.append({
+                        **base,
+                        "constraint_type":   "lifetime",
+                        "component_year":    y,
+                        "raw_dual":          raw_dual,
+                        "coefficient":       1.0,
+                        "discount_factor":   discount_factors[y],
+                        "contribution_to_rc": raw_dual / scaling if not np.isnan(raw_dual) else np.nan,
+                    })
+
+                # ── Diffusion contributions ─────────────────────────────────
+                future_years = [y for y in years if y > y_inv]
+                if future_years and (diff_total_series is not None or diff_an_series is not None):
+                    if tech not in diff_param_cache:
+                        try:
+                            kdr_rate = float(np.squeeze(
+                                params.knowledge_depreciation_rate.sel(
+                                    set_technologies=tech).values))
+                        except Exception:
+                            kdr_rate = 0.0
+                        try:
+                            sr = float(np.squeeze(
+                                params.knowledge_spillover_rate.sel(
+                                    set_technologies=tech).values))
+                        except Exception:
+                            sr = np.inf
+                        diff_param_cache[tech] = (kdr_rate, sr)
+                    kdr_rate, sr = diff_param_cache[tech]
+
+                    for y_fut in future_years:
+                        kdr_val = (1.0 - kdr_rate) ** (dy * (y_fut - 1 - y_inv))
+                        try:
+                            mdr_fut = float(np.squeeze(
+                                params.max_diffusion_rate.sel(
+                                    set_technologies=tech,
+                                    set_time_steps_yearly=y_fut).values))
+                        except Exception:
+                            continue
+                        tdr_fut = (1.0 + mdr_fut) ** dy - 1.0
+                        if tdr_fut <= 0:
+                            continue
+                        coeff = tdr_fut * kdr_val
+
+                        # constraint_technology_diffusion_limit_total — index (tech, ctype, year)
+                        if diff_total_series is not None:
+                            mask = (
+                                (diff_total_series.index.get_level_values(0) == tech)
+                                & (diff_total_series.index.get_level_values(1) == ctype)
+                                & (diff_total_series.index.get_level_values(2) == y_fut)
+                            )
+                            if mask.any():
+                                raw_dual = float(diff_total_series[mask].iloc[0])
+                                rows.append({
+                                    **base,
+                                    "constraint_type":    "diffusion_total",
+                                    "component_year":     y_fut,
+                                    "raw_dual":           raw_dual,
+                                    "coefficient":        coeff,
+                                    "discount_factor":    np.nan,
+                                    "contribution_to_rc": raw_dual * coeff / scaling,
+                                })
+
+                        # constraint_technology_diffusion_limit — index (tech, ctype, node, year)
+                        if diff_an_series is not None and not np.isinf(sr):
+                            mask_sn = (
+                                (diff_an_series.index.get_level_values(0) == tech)
+                                & (diff_an_series.index.get_level_values(1) == ctype)
+                                & (diff_an_series.index.get_level_values(2) == node)
+                                & (diff_an_series.index.get_level_values(3) == y_fut)
+                            )
+                            if mask_sn.any():
+                                raw_dual = float(diff_an_series[mask_sn].iloc[0])
+                                rows.append({
+                                    **base,
+                                    "constraint_type":    "diffusion_an",
+                                    "component_year":     y_fut,
+                                    "raw_dual":           raw_dual,
+                                    "coefficient":        coeff,
+                                    "discount_factor":    np.nan,
+                                    "contribution_to_rc": raw_dual * coeff / scaling,
+                                })
+
+            except Exception:
+                continue
+
+        if not rows:
+            logging.info("No RC components to save — rc_components.csv not written")
+            return
+
+        out_df = pd.DataFrame(rows)
+        csv_file = self.name_dir.joinpath("rc_components.csv")
+        out_df.to_csv(csv_file, index=False)
+        logging.info(f"RC components saved to {csv_file} ({len(rows)} rows)")
 
     # ---------------------------------------------------------------------------
     # Boundary shadow prices

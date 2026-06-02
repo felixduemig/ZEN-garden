@@ -16,7 +16,7 @@
     "unit": "GW"
   },
   "capacity_limit": {
-    "default_value": 0,
+    "default_value": "inf",
     "unit": "GW"
   },
   "min_load": {
@@ -24,15 +24,15 @@
     "unit": "1"
   },
   "max_load": {
-    "default_value": 0,
+    "default_value": 1,
     "unit": "1"
   },
   "lifetime": {
-    "default_value": 30,
+    "default_value": 60,
     "unit": "1"
   },
   "opex_specific_variable": {
-    "default_value": 0.023695058818032102,
+    "default_value": 0,
     "unit": "Euro/MWh"
   },
   "carbon_intensity_technology": {
@@ -49,37 +49,27 @@
   },
   "opex_specific_fixed": {
     "default_value": 0,
-    "unit": "Euro/kW"
+    "unit": "Euro/MW"
   },
   "max_diffusion_rate": {
-    "default_value": 10000,
+    "default_value": 0.13,
     "unit": "1"
   },
-  "capex_specific_conversion": {
-    "default_value": 580,
-    "unit": "Euro/kW"
+  "transport_loss_factor_linear": {
+    "default_value": 5e-05,
+    "unit": "1/km"
+  },
+  "capex_per_distance_transport": {
+    "default_value": 265.0,
+    "unit": "Euro/km/MW"
+  },
+  "distance": {
+    "default_value": "inf",
+    "unit": "km"
   },
   "reference_carrier": {
     "default_value": [
-      "electricity"
+      "natural_gas"
     ]
-  },
-  "input_carrier": {
-    "default_value": []
-  },
-  "output_carrier": {
-    "default_value": [
-      "electricity"
-    ]
-  },
-  "conversion_factor": {
-    "": {
-      "default_value": 1.0,
-      "unit": "GWh/GWh"
-    }
-  },
-  "capacity_addition_unbounded": {
-    "default_value": 0.0,
-    "unit": "GW"
   }
 }

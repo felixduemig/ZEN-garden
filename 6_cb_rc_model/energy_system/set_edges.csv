@@ -1,0 +1,7 @@
+edge,node_from,node_to
+CH-AT,CH,AT
+AT-CH,AT,CH
+CH-DE,CH,DE
+DE-CH,DE,CH
+DE-AT,DE,AT
+AT-DE,AT,DE
