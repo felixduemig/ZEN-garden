@@ -63,6 +63,11 @@ config["solver"]["save_reduced_costs"] = True
 config["solver"]["solver_options"]["Method"] = 0         # Barrier
 #config["solver"]["solver_options"]["BarHomogeneous"] = 1  # Homogeneous algorithm
 config["solver"]["solver_options"]["Crossover"] = 1      # Interior-point duals, no vertex projection
+# +eps perturbation on capacity_addition to break dual degeneracy at unbuilt
+# technologies (selects the economically correct dual endpoint). Popped before
+# being passed to Gurobi. Set to None / remove to disable. Subtract eps from the
+# reported reduced_cost when post-processing.
+config["solver"]["solver_options"]["rc_perturbation"] = 1e-3
 #config["solver"]["solver_options"].pop("Presolve", None)  # Let Gurobi presolve reduce problem
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")
 

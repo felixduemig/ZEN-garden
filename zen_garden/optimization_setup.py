@@ -73,6 +73,8 @@ class OptimizationSetup(object):
         self.parameter_change_log = parameter_change_log()
         # optimization model
         self.model = None
+        # eps used by the RC objective perturbation (set in perturb_objective_for_rc)
+        self.rc_perturbation_eps = None
         # the components
         self.variables = None
         self.parameters = None
@@ -657,6 +659,37 @@ class OptimizationSetup(object):
                 new_base_time_steps_horizon = [new_base_time_steps_horizon]
             self.energy_system.set_base_time_steps = new_base_time_steps_horizon
             self.energy_system.set_time_steps_yearly = time_steps_yearly_horizon
+
+    def perturb_objective_for_rc(self):
+        """Add +eps * sum(capacity_addition) to the objective to break dual
+        degeneracy at unbuilt technologies.
+
+        At an unbuilt technology the lifetime equality leaves the capex
+        cost-attribution between the lifetime dual and the linear-capex dual a
+        free, objective-flat degree of freedom (a degenerate dual face). A small
+        positive perturbation makes capacity_addition strictly prefer its lower
+        bound 0 -> it becomes non-basic -> capacity becomes basic in the lifetime
+        equality -> the economically correct dual endpoint (t_lo, carrying the
+        genuine marginal value) is selected. As eps -> 0 the primal optimum is
+        unchanged and the dual converges exactly to that endpoint.
+
+        Controlled via config: solver.solver_options["rc_perturbation"] = <eps>.
+        The key is popped here so it is not forwarded to Gurobi as an option.
+        """
+        eps = self.solver.solver_options.pop("rc_perturbation", None)
+        if not eps:
+            return
+        # store so postprocessing can subtract the eps contribution from the
+        # native reduced cost (reduced_cost_corrected)
+        self.rc_perturbation_eps = eps
+        capacity_addition = self.model.variables["capacity_addition"]
+        new_expr = self.model.objective.expression + eps * capacity_addition.sum()
+        self.model.add_objective(
+            new_expr, overwrite=True, sense=self.model.objective.sense
+        )
+        logging.info(
+            f"RC perturbation: added +{eps} * sum(capacity_addition) to objective"
+        )
 
     def solve(self):
         """Create model instance by assigning parameter values and initializing sets."""

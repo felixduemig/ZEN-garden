@@ -56,10 +56,15 @@ config["solver"].setdefault("solver_options", {})
 config["solver"]["name"] = "gurobi"
 config["solver"]["save_duals"] = True
 config["solver"]["save_reduced_costs"] = True
-config["solver"]["solver_options"]["Method"] = 0 
+config["solver"]["solver_options"]["Method"] = -1 
 config["solver"]["solver_options"]["Crossover"] = 1
 config["solver"]["use_scaling"] = 0   
 config["solver"]["solver_options"]["Presolve"] = 0
+# +eps perturbation on capacity_addition to break dual degeneracy at unbuilt
+# technologies (moves the lifetime dual to the economically correct endpoint).
+# Popped before being passed to Gurobi. use_scaling=0 -> acts in raw objective
+# units. Set to None to disable. Subtract eps from reported native reduced_cost.
+config["solver"]["solver_options"]["rc_perturbation"] = 1e-5
 #config["solver"]["solver_options"].pop("Crossover", None)
 #config["solver"]["solver_options"].pop("BarHomogeneous", None)
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")

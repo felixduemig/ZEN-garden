@@ -706,21 +706,25 @@ class Postprocess:
         Output: <output_dir>/capacity_addition_analysis.csv
 
         Columns:
+          unit                             base unit of capacity_addition
           value                            optimal capacity addition [GW]
-          reduced_cost                     Gurobi RC attribute [model units]
+          vbasis                           Gurobi basis status (reliability flag):
+                                           0 = basic (degenerate -> rc unreliable),
+                                           -1/-2 = nonbasic, -3 = superbasic
           rc_capex_equivalent              dual-based RC [model units]
           rc_capex_equivalent_input_units  dual-based RC [Euro/kW installed]
-          rc_capex_equivalent_per_kw_eff   dual-based RC [Euro/kW_eff]
 
         rc_capex_equivalent_input_units answers:
           "By how much must capex decrease for this technology to become optimal?"
           = 0 for built technologies, > 0 for unbuilt technologies.
 
-        rc_capex_equivalent_per_kw_eff answers the same question but normalised
-        by mean max_load, making technologies with different capacity factors
-        comparable on a common effective-capacity basis.
+        The per-year dual breakdown behind rc_capex_equivalent is written to
+        rc_components.csv by save_rc_components().
 
         Requires Primal Simplex (Method=0) for exact duals. See main_rc.py.
+        The +eps perturbation (solver_options["rc_perturbation"]) selects the
+        economically correct dual endpoint at unbuilt technologies; it enters
+        rc_capex_equivalent only through the basis, not as an explicit term.
         """
         if "capacity_addition" not in self.model.variables:
             logging.info("capacity_addition variable not found — skipping RC analysis")
@@ -735,26 +739,12 @@ class Postprocess:
         unit = self.vars.units.get("capacity_addition", "") if hasattr(self.vars, "units") else ""
         df["unit"] = unit
 
-        # Gurobi RC attribute (exact with Simplex, mu/x noise with Barrier+no Crossover)
-        if self.solver.name == "gurobi":
-            try:
-                rc_arr = self.model.variables["capacity_addition"].get_solver_attribute("RC")
-                if self.solver.use_scaling:
-                    var_labels = self.model.variables["capacity_addition"].labels.data
-                    rc_arr = rc_arr * self.optimization_setup.scaling.D_c_inv[var_labels]
-                df["reduced_cost"] = rc_arr.to_series()
-            except Exception as e:
-                logging.debug(f"Could not retrieve Gurobi RC: {e}")
-                df["reduced_cost"] = np.nan
-        else:
-            df["reduced_cost"] = np.nan
-
-        # Gurobi basis status (VBasis attribute):
+        # Gurobi basis status (VBasis attribute) — reliability flag for rc_capex:
         #    0 = basic, -1 = nonbasic@lower, -2 = nonbasic@upper, -3 = superbasic
         # A row with value ~ 0 AND vbasis == 0 is a *degenerate basic variable*:
         # basic variables have reduced cost 0 by definition, which mechanically
-        # forces reduced_cost / rc_capex_equivalent to 0 regardless of the true
-        # economic distance. Such a 0 must NOT be read as "marginally profitable".
+        # forces rc_capex_equivalent to 0 regardless of the true economic distance.
+        # Such a 0 must NOT be read as "marginally profitable".
         # Requires Crossover=1 (without crossover no basis exists -> all NaN).
         if self.solver.name == "gurobi":
             try:
@@ -773,9 +763,12 @@ class Postprocess:
             logging.warning(f"Could not compute rc_capex_equivalent: {e}")
             df["rc_capex_equivalent"] = np.nan
 
-        # Convert to input units (Euro/kW): invert the fraction_year scaling
+        # Convert to input units (Euro/kW): invert the fraction_year scaling.
         # ZEN-garden stores capex_specific internally as input_value * fraction_year,
         # so dividing by fraction_year recovers the original Euro/kW unit.
+        # NOTE: fraction_year == 1 whenever the model is not time-aggregated for
+        # capex (unaggregated_time_steps_per_year == total_hours_per_year); then
+        # this column equals rc_capex_equivalent.
         try:
             fraction_year = (
                 self.system.unaggregated_time_steps_per_year
@@ -786,66 +779,14 @@ class Postprocess:
             logging.warning(f"Could not compute rc_capex_equivalent_input_units: {e}")
             df["rc_capex_equivalent_input_units"] = np.nan
 
-        # RC per kW of effective capacity: rc_input_units / max_load
-        # Answers: "by how much must capex fall per kW of actually usable output?"
-        # Unlike rc_capex_equivalent_input_units (per kW installed), this normalises
-        # for technologies with different capacity factors (max_load), making them
-        # comparable on a common basis.
-        try:
-            df["rc_capex_equivalent_per_kw_eff"] = self._compute_rc_per_kw_eff(df)
-        except Exception as e:
-            logging.warning(f"Could not compute rc_capex_equivalent_per_kw_eff: {e}")
-            df["rc_capex_equivalent_per_kw_eff"] = np.nan
-
-        df = df[["unit", "value", "reduced_cost", "vbasis",
-                 "rc_capex_equivalent", "rc_capex_equivalent_input_units",
-                 "rc_capex_equivalent_per_kw_eff"]]
+        df = df[["unit", "value", "vbasis",
+                 "rc_capex_equivalent", "rc_capex_equivalent_input_units"]]
 
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
         df.to_csv(csv_file)
         logging.info(f"Capacity addition analysis saved to {csv_file}")
 
         self.save_rc_components()
-
-    def _compute_rc_per_kw_eff(self, df):
-        """Returns rc_capex_equivalent_input_units divided by mean max_load per (tech, node).
-
-        Normalises the RC from Euro/kW_installed to Euro/kW_eff, where
-        kW_eff = max_load * kW_installed.  This makes technologies with different
-        capacity factors comparable: a technology with max_load=0.35 only delivers
-        35 % of its rated capacity, so its effective cost per usable kW is
-        capex / max_load.  Dividing the RC by the same factor gives the required
-        capex reduction expressed in those same effective-capacity terms.
-
-        max_load is averaged over all time steps (constant in most datasets).
-        Returns nan when max_load is zero or unavailable.
-        """
-        params = self.optimization_setup.parameters
-        result = []
-        cache = {}
-
-        for idx, row in df.iterrows():
-            tech, _ctype, node = idx[0], idx[1], idx[2]
-            rc_val = row.get("rc_capex_equivalent_input_units", np.nan)
-
-            key = (tech, node)
-            if key not in cache:
-                try:
-                    ml_arr = params.max_load.sel(
-                        set_technologies=tech, set_location=node
-                    )
-                    ml = float(ml_arr.mean().values)
-                except Exception:
-                    ml = float("nan")
-                cache[key] = ml
-
-            ml = cache[key]
-            if np.isnan(rc_val) or np.isnan(ml) or ml <= 0:
-                result.append(np.nan)
-            else:
-                result.append(rc_val / ml)
-
-        return result
 
     def save_rc_components(self):
         """Saves the per-year dual contributions to the RC to rc_components.csv.

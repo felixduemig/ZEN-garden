@@ -138,6 +138,10 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
             optimization_setup.overwrite_time_indices(step)
             # create optimization problem
             optimization_setup.construct_optimization_problem()
+            # optional +eps perturbation on capacity_addition to break dual
+            # degeneracy and recover the economically correct RC (no-op unless
+            # solver.solver_options["rc_perturbation"] is set)
+            optimization_setup.perturb_objective_for_rc()
             if optimization_setup.solver.use_scaling:
                 optimization_setup.scaling.run_scaling()
             elif (
