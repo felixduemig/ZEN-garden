@@ -749,6 +749,23 @@ class Postprocess:
         else:
             df["reduced_cost"] = np.nan
 
+        # Gurobi basis status (VBasis attribute):
+        #    0 = basic, -1 = nonbasic@lower, -2 = nonbasic@upper, -3 = superbasic
+        # A row with value ~ 0 AND vbasis == 0 is a *degenerate basic variable*:
+        # basic variables have reduced cost 0 by definition, which mechanically
+        # forces reduced_cost / rc_capex_equivalent to 0 regardless of the true
+        # economic distance. Such a 0 must NOT be read as "marginally profitable".
+        # Requires Crossover=1 (without crossover no basis exists -> all NaN).
+        if self.solver.name == "gurobi":
+            try:
+                vbasis_arr = self.model.variables["capacity_addition"].get_solver_attribute("VBasis")
+                df["vbasis"] = vbasis_arr.to_series()
+            except Exception as e:
+                logging.debug(f"Could not retrieve Gurobi VBasis: {e}")
+                df["vbasis"] = np.nan
+        else:
+            df["vbasis"] = np.nan
+
         # Dual-based capex-equivalent RC — primary reliable metric
         try:
             df["rc_capex_equivalent"] = self._compute_rc_capex_equivalent(df)
@@ -780,7 +797,7 @@ class Postprocess:
             logging.warning(f"Could not compute rc_capex_equivalent_per_kw_eff: {e}")
             df["rc_capex_equivalent_per_kw_eff"] = np.nan
 
-        df = df[["unit", "value", "reduced_cost",
+        df = df[["unit", "value", "reduced_cost", "vbasis",
                  "rc_capex_equivalent", "rc_capex_equivalent_input_units",
                  "rc_capex_equivalent_per_kw_eff"]]
 

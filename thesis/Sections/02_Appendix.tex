@@ -1,0 +1,46 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Numerical Pitfalls of Value Extraction}
+\label{app:problems}
+
+\subsection{Degeneracy: Unreliable Duals and Reduced Costs}
+\label{app:problem1}
+\begin{itemize}
+	\item Degeneracy in the LP affects \emph{both} families of sensitivity
+	information: constraint duals (\aclp{SP}) and variable \aclp{RC}.
+	\item The lifetime equality forces a coupled variable into the basis; the
+	crossover tie-break often makes \texttt{capacity\_addition} basic at value
+	zero, so its native \ac{RC} reads as zero by definition even when the
+	technology is not built.
+	\item The same non-uniqueness can make the recovered dual basis-dependent,
+	so a naive read of either quantity can be misleading.
+\end{itemize}
+
+\subsection{Presolve Breaks Dual Recovery}
+\label{app:problem2}
+\begin{itemize}
+	\item With presolve on, the dual of \texttt{constraint\_technology\_lifetime}
+	is not recoverable in the original variable space.
+	\item Fix: set \texttt{Presolve 0}.
+\end{itemize}
+
+\subsection{True Dual Degeneracy}
+\label{app:problem3}
+\begin{itemize}
+	\item Non-unique lifetime dual makes the capex-equivalent \ac{RC}
+	basis-dependent. Case: Value is zero, but also the manually calculated capex-equivalent \ac{RC} is zero, so the technology looks like being on the verge of being built.
+	\item A small \ac{CAPEX} perturbation flips vertices and yields a non-monotonic response (still not built).
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Solver Configuration}
+\label{app:solver-config}
+\begin{itemize}
+	\item Recommended Gurobi settings [...] for reliable dual and \ac{RC} recovery.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Derivation of the Capex-Equivalent Reduced Cost}
+\label{app:rc-derivation}
+\begin{itemize}
+	\item Further derivation of formulas 
+\end{itemize}

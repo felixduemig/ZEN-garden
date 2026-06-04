@@ -1,0 +1,39 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Methodology and Implementation}
+\label{sec:methodology}
+
+%---------------------------------------------------------------
+\subsection{Capex-Equivalent Reduced Cost from the Lifetime Dual}
+\label{sec:capex-equivalent}
+\begin{itemize}
+	\item The native solver \ac{RC} of \texttt{capacity\_addition} is in
+	annualised objective units and is often zero for degenerate-basic variables.
+	\item Instead, reconstruct an investment-level signal from the dual of the
+	lifetime coupling constraint.
+\end{itemize}
+
+The capex-equivalent reduced cost is
+\begin{equation}
+	\label{eq:rc-capex}
+	\text{rc\_capex\_equivalent}
+	= \text{capex\_specific}
+	- \frac{\sum_{} \left(-\,\text{dual}_\text{lifetime}\right)}
+	       {\text{annuity}\,\cdot\,\sum_{} \text{discount\_factor}} ,
+\end{equation}
+reported in input units ($\si{\text{\euro}\per\kilo\watt}$).
+\begin{itemize}
+	\item Derive the annuity / \ac{CRF} factor.
+	\item Show the bit-exact identity for a marginally-built technology
+	(lifetime dual $=-(\text{capex}\cdot\text{CRF})$); full derivation in
+	Appendix~\ref{app:rc-derivation}.
+\end{itemize}
+
+%---------------------------------------------------------------
+\subsection{Shadow-Price Extraction and the Generic-Technology Trick}
+\label{sec:shadow-price}
+\begin{itemize}
+	\item Shadow prices are read directly from constraint duals.
+	\item To isolate the marginal value of a specific boundary, insert a
+	\emph{generic technology} whose single defining constraint exposes the
+	desired \ac{SP} in isolation.
+\end{itemize}

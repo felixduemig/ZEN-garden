@@ -1,0 +1,27 @@
+# LaTeX build artifacts
+build/
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.glo
+*.gls
+*.glg
+*.ist
+*.acn
+*.acr
+*.alg
+*.nav
+*.snm
+*.vrb
+*.run.xml
+*-blx.bib
+# auto-generated converted vector graphics (shell-escape)
+*-eps-converted-to.pdf

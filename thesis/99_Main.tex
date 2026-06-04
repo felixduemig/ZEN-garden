@@ -1,0 +1,73 @@
+%IMPORTANT:
+%If you use vector graphs (recommended) you most likely need to compile this document with a -shell-escape flag. Always compile the main file.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Document Class
+\documentclass[12pt, a4paper]{article}
+
+% Importing Packages
+\usepackage{00_Preamble}
+
+\begin{document}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Front Page
+\import{Sections/}{00_FrontPage.tex}
+\newpage
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Preface
+\pagenumbering{roman}
+\import{Sections/}{00_Abstract.tex}
+\newpage
+\import{Sections/}{00_Acknowledgements.tex}
+\newpage
+\import{Sections/}{00_Glossaries.tex}
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Main text
+\pagestyle{maintext}
+\pagenumbering{arabic}
+\setcounter{page}{1}
+
+\setcounter{page}{1}%set page number to one
+\import{Sections/}{01_Introduction.tex}
+\newpage
+\import{Sections/}{02_Background.tex}
+\newpage
+\import{Sections/}{03_Framework.tex}
+\newpage
+\import{Sections/}{04_Methodology.tex}
+\newpage
+\import{Sections/}{05_Results.tex}
+\newpage
+\import{Sections/}{06_Discussion.tex}
+\newpage
+\import{Sections/}{07_Conclusion.tex}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix
+\newpage
+\pagestyle{appendix}
+\part*{Appendix}
+\addcontentsline{toc}{part}{Appendix}
+\setcounter{section}{0} \renewcommand{\thesection}{A\arabic{section}}
+\setcounter{figure}{0} \renewcommand{\thefigure}{A\arabic{figure}}
+\setcounter{table}{0} \renewcommand{\thetable}{A\arabic{table}}
+\setcounter{equation}{0} \renewcommand{\theequation}{A\arabic{equation}}
+
+\import{Sections/}{02_Appendix.tex}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Bibliography (noch keine Zitate -> vorerst auskommentiert)
+% \newpage
+% \pagestyle{references}
+% \part*{References}
+% \addcontentsline{toc}{part}{References}
+% \renewcommand{\refname}{}
+% \bibliographystyle{unsrt}
+% \bibliography{bibliography}
+% \newpage
+
+\includepdf[pages=-]{declaration-originality.pdf}
+
+\end{document}

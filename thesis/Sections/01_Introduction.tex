@@ -1,0 +1,46 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction and Motivation}
+\label{sec:introduction}
+
+%---------------------------------------------------------------
+\subsection{Motivation}
+\label{sec:motivation}
+\begin{itemize}
+	\item Cost-optimal \acp{ESM} return a single least-cost solution.
+	\item Decision makers care about more than the optimum: robustness, which
+	technologies are ``almost'' competitive, and what a constraint costs at the
+	margin.
+	\item LP duality already encodes this in \aclp{RC} and \aclp{SP}, but
+	\acp{ESM} typically discard it.
+\end{itemize}
+
+%---------------------------------------------------------------
+% TODO: Research Questions noch nicht final -- aus der Task Description ableiten,
+% nicht selbst erfinden. Bis dahin auskommentiert.
+% \subsection{Research Questions}
+% \label{sec:research-questions}
+% This thesis addresses the following research questions:
+% \begin{itemize}
+% 	\item \textbf{RQ1.} How do established \acp{ESM} currently treat and report
+% 	the boundaries of the cost-optimal solution?
+% 	\item \textbf{RQ2.} How can \aclp{RC} and \aclp{SP} be extracted reliably
+% 	from a framework-based \ac{ESM} (ZEN-garden) built on \texttt{linopy} and
+% 	Gurobi?
+% 	\item \textbf{RQ3.} How can the \ac{RC} of an investment variable be
+% 	translated into an interpretable, per-technology \emph{capex-equivalent}
+% 	($\si{\text{\euro}\per\kilo\watt}$) quantity?
+% 	\item \textbf{RQ4.} Under which numerical conditions (presolve, scaling,
+% 	crossover, degeneracy) are these dual quantities trustworthy?
+% \end{itemize}
+
+%---------------------------------------------------------------
+\subsection{Contributions}
+\label{sec:contributions}
+\begin{itemize}
+	\item Review of how boundary information is handled in established \acp{ESM}.
+	\item A post-processing pipeline that extracts \aclp{SP} and \aclp{RC} from
+	ZEN-garden.
+	\item A capex-equivalent reduced-cost metric for investment variables.
+	\item A characterisation of the numerical pitfalls (degeneracy, presolve,
+	scaling) that make naive dual readings unreliable, with mitigations.
+\end{itemize}

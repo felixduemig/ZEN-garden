@@ -1,0 +1,187 @@
+\ProvidesPackage{00_Preamble}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Page Style
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% package to rotate pages
+\usepackage{lscape}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Fonts and Math
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% package for Chemical Symbols
+\usepackage[version=4]{mhchem}
+% packages for LaTeX that provides various features to facilitate writing math
+\usepackage{amsmath,amsfonts,amssymb}
+% package to get eurosymbol per \euro
+\usepackage{eurosym}
+% package to set font encoding
+\usepackage[T1]{fontenc}
+% package to set input encoding				
+\usepackage[latin1]{inputenc}
+% package to set space between lines
+\usepackage{setspace}
+% package to use colors
+\usepackage{xcolor}
+% package for symbols
+\usepackage{textcomp}
+% package for symbols
+\usepackage{gensymb}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Tables
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% package for column width and linebreaks
+\usepackage{tabularx}
+\usepackage[flushleft]{threeparttable}
+\usepackage{makecell}
+% package to combine cells in tables
+\usepackage{multirow}
+% package for nice summation sign in table cells
+\usepackage{exscale}
+% package for extending array and tabular environments (needed for dcolumn)
+\usepackage{array}
+% Creates D-column for tables (separator alignment)
+\usepackage{dcolumn}
+% General table optimization package
+\usepackage{booktabs}
+						
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Graph packages
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% PGF package
+\usepackage{pgfplotstable}
+\usepgfplotslibrary{groupplots}
+\pgfplotsset{compat=1.7}
+% Caption Packages
+\usepackage[skip=0.3\baselineskip]{caption}
+\usepackage{subcaption}
+% package to include graphics
+\usepackage{graphicx} 		
+% Package for SVG graphics
+\usepackage{svg}
+				
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Other Packages
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% package for bibliography
+\usepackage{natbib}
+% package provides less extreme raggedness than the standard LaTeX commands \flushleft and \flushright
+\usepackage{ragged2e} 						
+% package to define position of tables and figures
+\usepackage{float}	
+% package for abbreviations						
+\usepackage{acro}
+\acsetup{make-links=true}
+% Change fonts globally
+\usepackage{etoolbox}
+% Need Space Package
+\usepackage{needspace}
+% package for SI units (in tables)
+\usepackage{siunitx}
+% package to rotate graphs, tables and paragraphs
+\usepackage{rotating}
+% package to include files from other directories
+\usepackage{import}
+% Package to increase spacing in TOC
+\usepackage{tocloft}
+\setlength{\cftsecnumwidth}{3em}
+\setlength{\cftsubsecnumwidth}{4em}
+% Include pdf pages
+\usepackage{pdfpages}
+% Headers
+\usepackage{fancyhdr}
+\fancypagestyle{maintext}{
+  \fancyhf{}
+  \fancyhead[L]{\nouppercase{\leftmark}}
+  \fancyhead[R]{\thepage}
+  \renewcommand{\headrulewidth}{0.4pt}
+}
+\fancypagestyle{appendix}{
+  \fancyhf{}
+  \fancyhead[L]{\nouppercase{Appendix \leftmark}}
+  \fancyhead[R]{\thepage}
+  \renewcommand{\headrulewidth}{0.4pt}
+}
+
+\fancypagestyle{references}{
+  \fancyhf{}
+  \fancyhead[L]{References}
+  \fancyhead[R]{\thepage}
+  \renewcommand{\headrulewidth}{0.4pt}
+}
+\setlength{\headheight}{15pt}
+% package to generate links in doc
+\usepackage{hyperref}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Set parameters for functions
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Remove Indents
+\setlength\parindent{0pt}
+
+%Global Font Sizes
+\AtBeginEnvironment{tabular}{\scriptsize}
+\captionsetup[figure]{font=footnotesize}
+\captionsetup[table]{font=footnotesize}
+
+
+% adjustment of page parameters
+\usepackage[left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm]{geometry}
+%line spacing is set to 1.5
+\renewcommand{\baselinestretch}{1.5} 
+%space between footnote and text		
+\setlength{\footnotesep}{10.0pt}
+
+%Set colors
+\definecolor{myblue}{RGB}{14, 48, 96}
+\definecolor{myred}{RGB}{166, 38, 35}
+\definecolor{myyellow}{RGB}{209, 145, 62}
+\definecolor{mylightblue}{RGB}{19, 83, 144}
+
+%Hyper Ref Color
+\hypersetup{	
+	linkcolor=black,
+	colorlinks = true,
+	citecolor=black
+}
+
+% Force footnote on one page
+\interfootnotelinepenalty=10000
+
+% Set section numbering
+\setcounter{secnumdepth}{2}
+
+% ---------------------------------------------------------------
+% Scaffolding helper macros (drafting only -- remove before final)
+% ---------------------------------------------------------------
+% Inline TODO note (red, bold). No todonotes package is loaded.
+\newcommand{\todo}[1]{{\color{myred}\textbf{[TODO: #1]}}}
+% Inline placeholder text (gray) for prose still to be written.
+\newcommand{\placeholder}[1]{{\color{gray}\textit{[#1]}}}
+% Figure placeholder box of given height (default 5cm) with a caption-like label.
+\newcommand{\figplaceholder}[2][5cm]{%
+	\begin{center}
+		\fbox{\parbox[c][#1][c]{0.9\textwidth}{\centering\color{gray}\itshape [Figure placeholder: #2]}}%
+	\end{center}}
+
+% ---------------------------------------------------------------
+% Acronyms
+% ---------------------------------------------------------------
+\DeclareAcronym{LP}{short=LP, long=linear program}
+\DeclareAcronym{ESM}{short=ESM, long=energy system model}
+\DeclareAcronym{RC}{short=RC, long=reduced cost}
+\DeclareAcronym{SP}{short=SP, long=shadow price}
+\DeclareAcronym{CRF}{short=CRF, long=capital recovery factor}
+\DeclareAcronym{KKT}{short=KKT, long=Karush--Kuhn--Tucker}
+\DeclareAcronym{CAPEX}{short=CAPEX, long=capital expenditure}
+\DeclareAcronym{OPEX}{short=OPEX, long=operational expenditure}
+\DeclareAcronym{PV}{short=PV, long=photovoltaic}
+\DeclareAcronym{MILP}{short=MILP, long=mixed-integer linear program}
+

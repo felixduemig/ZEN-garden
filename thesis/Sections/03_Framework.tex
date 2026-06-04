@@ -1,0 +1,33 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Framework: ZEN-garden and the Crystal Ball Dataset}
+\label{sec:framework}
+
+%---------------------------------------------------------------
+\subsection{ZEN-garden}
+\label{sec:zen-garden}
+\begin{itemize}
+	\item Open-source framework for optimising energy transition pathways with
+	user-oriented data handling.
+	\item The optimisation model is assembled with \texttt{linopy} and handed to
+	Gurobi.
+\end{itemize}
+
+\paragraph{Investment variables and the capacity coupling.}
+\begin{itemize}
+	\item \texttt{capacity\_addition} is the investment decision.
+	\item \texttt{constraint\_technology\_lifetime} is an equality coupling
+	installed \texttt{capacity} to the sum of additions over the lifetime window.
+	\item Because it is an equality, at least one coupled variable must be basic
+	per (technology, node, year) -- the structural source of the degeneracy
+	discussed in Section~\ref{sec:results} and Appendix~\ref{app:problems}.
+\end{itemize}
+
+%---------------------------------------------------------------
+\subsection{The Crystal Ball Dataset}
+\label{sec:crystal-ball}
+\begin{itemize}
+	\item 28-node European electricity-system instance.
+	\item Temporal scope: planning horizon to 2050.
+	\item Give the technologies considered and the node set used for the
+	per-country results.
+\end{itemize}

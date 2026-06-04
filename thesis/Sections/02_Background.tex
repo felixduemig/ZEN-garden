@@ -1,0 +1,74 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Background}
+\label{sec:background}
+
+%---------------------------------------------------------------
+\subsection{Linear Programming Duality and Sensitivity}
+\label{sec:lp-duality}
+\begin{itemize}
+	\item State the primal LP $\min c^\top x$ s.t. $Ax \ge b,\ x \ge 0$ and its dual.
+	\item Introduce the basis: with $m$ equality constraints, a basic solution
+	has exactly $m$ basic variables and the basis matrix is invertible.
+\end{itemize}
+
+\paragraph{Basic vs.\ non-basic variables and complementary slackness.}
+\begin{itemize}
+	\item A basic variable has \ac{RC} zero by definition; a variable with
+	non-zero \ac{RC} is provably non-basic.
+	\item Complementary slackness links primal activity and dual constraints.
+\end{itemize}
+
+\paragraph{Shadow price.}
+\begin{itemize}
+	\item The \ac{SP} of a constraint is the marginal change of the objective
+	per unit relaxation of that constraint's right-hand side.
+	\item Valid only within the basis-stable interval.
+\end{itemize}
+
+\paragraph{Reduced cost.}
+\begin{itemize}
+	\item The \ac{RC} of a (currently non-basic) variable is the amount by which
+	its objective coefficient must improve before it enters the optimal basis at
+	a positive level.
+	\item Central reading: ``how much cheaper must this technology become to be
+	built''.
+\end{itemize}
+
+%---------------------------------------------------------------
+\subsection{Solving Linear Programs}
+\label{sec:solving-lps}
+
+\paragraph{Simplex (primal and dual).}
+\begin{itemize}
+	\item Vertex-following methods.
+	\item Always terminate at a basic (vertex) solution, hence return a basis
+	and well-defined \ac{RC}/\ac{SP}.
+\end{itemize}
+
+\paragraph{Barrier / interior point.}
+\begin{itemize}
+	\item Follow the central path to an interior optimum.
+	\item On their own they return a non-vertex solution, so basis-dependent
+	duals are not directly available.
+\end{itemize}
+
+\paragraph{Crossover.}
+\begin{itemize}
+	\item Pushes a barrier solution to an adjacent vertex so a basis -- and
+	therefore exact \ac{RC}/\ac{SP} -- becomes available.
+	\item Required for the VBasis flag used in Section~\ref{sec:methodology}.
+\end{itemize}
+
+\paragraph{Presolve and scaling.}
+\begin{itemize}
+	\item Presolve aggregates/substitutes constraints and variables for speed,
+	which can make certain constraint duals unrecoverable in the original space.
+	\item Scaling rescales rows/columns and must be undone to report duals in
+	input units.
+	\item Both effects motivate the robustness study in Section~\ref{sec:results}.
+\end{itemize}
+
+%---------------------------------------------------------------
+\subsection{Boundary Information in Established Energy System Models}
+\label{sec:related-work}
+tbd
