@@ -1,0 +1,8 @@
+Euro = [currency] = EURO = Eur = €
+pkm = [mileage] = passenger_km = passenger_kilometer
+tCO2eq = [massCO2eq] = tonCO2eq = tCO2 = tonne_carbon
+tonproduct = [mass_product] = tproduct = tonne_product
+ton = metric_ton
+Euro = [currency] = EURO = Eur
+year = 365 * day = a = yr = julian_year
+tkm = [tonne_mileage] = tonne_km = tonne_kilometer

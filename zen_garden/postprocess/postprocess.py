@@ -708,6 +708,12 @@ class Postprocess:
         Columns:
           unit                             base unit of capacity_addition
           value                            optimal capacity addition [GW]
+          capacity                         total installed capacity = existing +
+                                           additions [GW]; shows the phantom
+                                           +delta at perturbed greenfield nodes
+          capacity_ceiling                 binding upper limit on capacity =
+                                           min(variable upper bound, capacity_limit)
+                                           [GW]; inf = unbounded
           vbasis                           Gurobi basis status (reliability flag):
                                            0 = basic (degenerate -> rc unreliable),
                                            -1/-2 = nonbasic, -3 = superbasic
@@ -756,6 +762,31 @@ class Postprocess:
         else:
             df["vbasis"] = np.nan
 
+        # Total installed capacity (= existing + additions) and the capacity
+        # variable's upper bound, for sanity-checking the RC cases (greenfield
+        # vs brownfield, whether a technology sits at its ceiling, and the
+        # phantom +delta from the lifetime-RHS perturbation showing up as a tiny
+        # capacity at perturbed greenfield nodes). Model units (= input units
+        # when use_scaling=0, as in the RC analysis); inf = no upper bound.
+        try:
+            df["capacity"] = self.model.solution["capacity"].to_series().reindex(df.index)
+        except Exception as e:
+            logging.debug(f"Could not retrieve capacity: {e}")
+            df["capacity"] = np.nan
+        try:
+            cap_upper = self.model.variables["capacity"].upper.to_series().reindex(df.index)
+            cap_limit = self.params.capacity_limit.to_series().reindex(df.index)
+            # effective ceiling on capacity = min(variable upper bound, which folds
+            # in capacity_addition_max, and the capacity_limit constraint). This is
+            # the binding upper limit the lifetime-RHS perturbation guard uses;
+            # inf = unbounded.
+            df["capacity_ceiling"] = np.minimum(
+                cap_upper.fillna(np.inf), cap_limit.fillna(np.inf)
+            )
+        except Exception as e:
+            logging.debug(f"Could not retrieve capacity ceiling: {e}")
+            df["capacity_ceiling"] = np.nan
+
         # Dual-based capex-equivalent RC — primary reliable metric
         try:
             df["rc_capex_equivalent"] = self._compute_rc_capex_equivalent(df)
@@ -779,7 +810,7 @@ class Postprocess:
             logging.warning(f"Could not compute rc_capex_equivalent_input_units: {e}")
             df["rc_capex_equivalent_input_units"] = np.nan
 
-        df = df[["unit", "value", "vbasis",
+        df = df[["unit", "value", "capacity", "capacity_ceiling", "vbasis",
                  "rc_capex_equivalent", "rc_capex_equivalent_input_units"]]
 
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")

@@ -64,7 +64,17 @@ config["solver"]["solver_options"]["Presolve"] = 0
 # technologies (moves the lifetime dual to the economically correct endpoint).
 # Popped before being passed to Gurobi. use_scaling=0 -> acts in raw objective
 # units. Set to None to disable. Subtract eps from reported native reduced_cost.
-config["solver"]["solver_options"]["rc_perturbation"] = 1e-5
+config["solver"]["solver_options"]["rc_perturbation"] = 0
+# +delta perturbation on the RHS of constraint_technology_lifetime (= a tiny
+# phantom existing capacity). RHS perturbation: tilts the otherwise flat dual
+# objective (capacity_existing * lambda = 0*lambda) so the lifetime dual is pinned
+# to the economically correct "value" endpoint -> rc_capex_equivalent shows the
+# true distance-to-build instead of a spurious 0 at unbuilt nodes. This is the
+# correct knob for the single-node (primal) degeneracy; rc_perturbation (objective)
+# cannot select within the dual interval. Units = capacity units (GW). Choose
+# > solver feasibility tolerance (>> 1e-6) and smaller than the smallest positive
+# capacity_limit. Popped before being passed to Gurobi. Set to 0/None to disable.
+config["solver"]["solver_options"]["rc_lifetime_rhs_perturbation"] = 1e-4
 #config["solver"]["solver_options"].pop("Crossover", None)
 #config["solver"]["solver_options"].pop("BarHomogeneous", None)
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")

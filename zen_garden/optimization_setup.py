@@ -15,6 +15,7 @@ from collections import defaultdict
 import linopy as lp
 import numpy as np
 import pandas as pd
+import xarray as xr
 
 from zen_garden.model.component import Constraint, IndexSet, Parameter, Variable
 from zen_garden.model.element import Element
@@ -689,6 +690,97 @@ class OptimizationSetup(object):
         )
         logging.info(
             f"RC perturbation: added +{eps} * sum(capacity_addition) to objective"
+        )
+
+    def perturb_lifetime_rhs_for_rc(self):
+        """Add +delta to the RHS of constraint_technology_lifetime (a phantom
+        existing capacity) to break PRIMAL degeneracy at unbuilt technologies.
+
+        At an unbuilt technology capacity and capacity_addition are both 0, so the
+        lifetime equality (capacity - sum(capacity_addition) = capacity_existing)
+        reads 0 = 0 and its dual lambda is non-unique (a whole interval
+        [-K, -V], K = annualised capex, V = marginal value of capacity). The dual
+        objective contributes capacity_existing * lambda = 0 * lambda, i.e. it is
+        flat in lambda -> the solver cannot select an endpoint and the
+        reconstructed rc_capex_equivalent may collapse to a spurious 0.
+
+        Adding a tiny POSITIVE delta to the RHS makes the dual objective term
+        delta * lambda, whose maximiser over the (unchanged) feasible interval is
+        the value endpoint lambda = -V. This pins the lifetime dual to the
+        economically correct endpoint, so rc_capex_equivalent reports the true
+        distance-to-build. As delta -> 0 the primal optimum is unchanged
+        (capacity_addition stays 0; only capacity picks up the phantom delta).
+
+        This is an RHS perturbation and is the correct knob for this (primal)
+        degeneracy. Contrast rc_perturbation, which perturbs the OBJECTIVE: that
+        only shifts the dual-feasible interval and, because the dual objective
+        stays flat in lambda, cannot select within it.
+
+        Only genuinely degenerate GREENFIELD entries are perturbed: existing == 0
+        (RHS == 0) AND min(capacity upper bound, capacity_limit) >= delta.
+
+        The greenfield restriction matters because the 0 = 0 degeneracy only
+        exists where existing == 0. Brownfield technologies (existing != 0) have
+        capacity > 0 and hence a non-degenerate lifetime dual already -- they
+        neither need the perturbation nor tolerate it (e.g. reservoir_hydro at a
+        node with existing == capacity_limit would become infeasible, because
+        capacity = existing + delta > capacity_limit).
+
+        The head-room check (ceiling = min(capacity.upper, capacity_limit) >=
+        delta) additionally skips greenfield technologies that cannot host delta
+        at all: capacity_limit < delta, or on/off techs with
+        capacity_addition_max == 0 whose capacity upper bound is 0
+        (capacity.upper folds in capacity_addition_max via capacity_bounds() in
+        technology.py).
+
+        Controlled via config:
+        solver.solver_options["rc_lifetime_rhs_perturbation"] = <delta> in
+        capacity units (e.g. GW). The key is popped here so it is not forwarded
+        to Gurobi. Set to None/0 to disable.
+        """
+        delta = self.solver.solver_options.pop("rc_lifetime_rhs_perturbation", None)
+        if not delta:
+            return
+        name = "constraint_technology_lifetime"
+        if name not in self.model.constraints:
+            logging.warning(
+                f"RC lifetime-RHS perturbation: '{name}' not in model — skipped"
+            )
+            return
+        con = self.model.constraints[name]
+        rhs_da = con.rhs
+        try:
+            # Capacity head-room = min(variable upper bound, capacity_limit);
+            # both can bind (see docstring / capacity_bounds() in technology.py).
+            cap_upper = xr.align(
+                rhs_da, self.model.variables["capacity"].upper, join="left"
+            )[1].fillna(np.inf)
+            cap_limit = xr.align(
+                rhs_da, self.parameters.capacity_limit, join="left"
+            )[1].fillna(np.inf)
+            ceiling = np.minimum(cap_upper, cap_limit)
+            # Perturb only degenerate greenfield entries (existing == 0) that
+            # have room for delta; skip brownfield and no-room techs (the
+            # docstring explains why both conditions are required to stay
+            # feasible).
+            is_greenfield = np.abs(rhs_da) < 1e-9
+            add = xr.where(is_greenfield & (ceiling >= delta), float(delta), 0.0)
+            add = add.broadcast_like(rhs_da).transpose(*rhs_da.dims)
+            add_data = add.data
+        except Exception as exc:
+            logging.error(
+                f"RC lifetime-RHS perturbation: head-room guard failed ({exc}); "
+                f"skipping the perturbation entirely (safer than risking "
+                f"infeasibility)."
+            )
+            return
+        n_perturbed = int(np.count_nonzero(add_data))
+        n_total = int(add_data.size)
+        con.rhs.data = rhs_da.data + add_data
+        logging.info(
+            f"RC perturbation: added +{delta} to RHS of {name} "
+            f"({n_perturbed}/{n_total} entries perturbed; "
+            f"{n_total - n_perturbed} skipped for head-room < delta)"
         )
 
     def solve(self):

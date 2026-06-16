@@ -142,6 +142,11 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
             # degeneracy and recover the economically correct RC (no-op unless
             # solver.solver_options["rc_perturbation"] is set)
             optimization_setup.perturb_objective_for_rc()
+            # optional +delta perturbation on the constraint_technology_lifetime
+            # RHS (a phantom existing capacity) to break PRIMAL degeneracy and
+            # pin the lifetime dual to the economically correct endpoint (no-op
+            # unless solver.solver_options["rc_lifetime_rhs_perturbation"] is set)
+            optimization_setup.perturb_lifetime_rhs_for_rc()
             if optimization_setup.solver.use_scaling:
                 optimization_setup.scaling.run_scaling()
             elif (
