@@ -1,0 +1,1 @@
+{"analysis": {"dataset": "5_multiple_time_steps_per_year"}, "solver": {"solver_options": {"Method": 2, "Crossover": 1, "Presolve": 0, "rc_capex_override": [{"tech": "HDT_BET", "node": "ES", "year": 2050, "value": 250.0}]}, "name": "gurobi", "save_duals": true, "save_reduced_costs": true, "use_scaling": 0}}

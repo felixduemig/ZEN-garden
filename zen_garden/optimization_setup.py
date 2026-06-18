@@ -683,8 +683,21 @@ class OptimizationSetup(object):
             RC perturbation). Empty/absent = off.
         """
         so = self.solver.solver_options
-        capex_ov = so.pop("rc_capex_override", None)
-        tight_e2p = so.pop("rc_tight_e2p", None)
+        # This hook fires once per element class (Element.construct_model_components),
+        # interleaved with each class's construct_params. The target parameters do NOT
+        # all exist on the first call — capex_specific_conversion is created by the
+        # conversion technology, energy_to_power_ratio_* by storage. So we CACHE the
+        # overrides on first sight (popping the keys so they are not forwarded to the
+        # solver) and re-apply from the cache on every call, touching only the entries
+        # whose target parameter already exists. Re-applying an already-set value is a
+        # no-op (guarded below), so the net effect is "apply exactly once, as soon as
+        # the relevant parameter exists and before its class builds its cost terms".
+        if "rc_capex_override" in so:
+            self._rc_capex_override = so.pop("rc_capex_override")
+        if "rc_tight_e2p" in so:
+            self._rc_tight_e2p = so.pop("rc_tight_e2p")
+        capex_ov = getattr(self, "_rc_capex_override", None)
+        tight_e2p = getattr(self, "_rc_tight_e2p", None)
         if not capex_ov and not tight_e2p:
             return
 
@@ -730,8 +743,8 @@ class OptimizationSetup(object):
                 cls_ = tech_class(tech)
                 p = getattr(self.parameters, class_param.get(cls_, ""), None) if cls_ else None
                 if p is None:
-                    logging.warning(f"rc_capex_override: tech '{tech}' not found / no "
-                                    f"capex parameter — skipped")
+                    # parameter not constructed yet on this hook call (capex_specific_*
+                    # is created by its own technology class) — retried on a later call.
                     continue
                 dims = list(p.dims)
                 sel = {_dim(dims, "technolog"): tech,
@@ -743,6 +756,9 @@ class OptimizationSetup(object):
                 model_val = val * fraction_year
                 try:
                     cur = p.loc[sel]
+                    curv = np.asarray(cur.values, dtype=float)
+                    if curv.size and np.all(np.isnan(curv) | np.isclose(curv, model_val)):
+                        continue  # already applied (or only-NaN structure) — no-op
                     # preserve NaN structure (e.g. unused set_capex_linear segments)
                     p.loc[sel] = cur.where(np.isnan(cur), model_val)
                     logging.info(f"rc_capex_override: {class_param[cls_]}[{sel}] -> "
@@ -756,12 +772,15 @@ class OptimizationSetup(object):
             e2p_min = getattr(self.parameters, "energy_to_power_ratio_min", None)
             e2p_max = getattr(self.parameters, "energy_to_power_ratio_max", None)
             if e2p_min is None or e2p_max is None:
-                logging.warning("rc_tight_e2p: energy_to_power_ratio params missing — skipped")
+                pass  # storage params not built yet on this call — retried later
             else:
                 sdim = _dim(list(e2p_min.dims), "technolog")
                 for tech, dur in dict(tight_e2p).items():
                     try:
                         d = float(dur)
+                        if np.isclose(float(e2p_min.loc[{sdim: tech}]), d) and \
+                                np.isclose(float(e2p_max.loc[{sdim: tech}]), d):
+                            continue  # already applied — no-op
                         e2p_min.loc[{sdim: tech}] = d
                         e2p_max.loc[{sdim: tech}] = d
                         logging.info(f"rc_tight_e2p: '{tech}' duration fixed to {d} h "

@@ -23,6 +23,7 @@ import os
 from datetime import datetime
 
 from zen_garden import run
+from rc_capex_file_override import capex_file_override
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
@@ -96,15 +97,19 @@ config["solver"]["solver_options"]["rc_storage_power_perturbation"] = 0
 #    "pumped_hydro": 22,
 #    "salt_cavern_storage": 145,
 #}
-# Per-(tech, node, year) capex override, set from HERE instead of editing the
-# dataset CSV. RC is a per-node quantity, so this moves the reduced cost of a
-# SINGLE node/year only. `value` is in input-file units (Euro/kW); for storage add
-# "capacity_type": "power"|"energy". Applied in apply_parameter_overrides_for_rc()
-# (popped before Gurobi). Empty list / removal = off. Example (commented):
-# config["solver"]["solver_options"]["rc_capex_override"] = [
-#     {"tech": "nuclear", "node": "NL", "year": 2050, "value": 4500.0},
-#     {"tech": "battery", "node": "CH", "year": 2050, "capacity_type": "power", "value": 70.0},
-# ]
+# Per-(tech, node, year) capex override via the robust DATA-CSV swap
+# (rc_capex_file_override.py): temporarily writes `value` into the technology's capex
+# input CSV (the path the model reliably reads), runs, then restores the original
+# byte-for-byte — even on error. RC is a per-node quantity, so this moves the reduced
+# cost of a SINGLE node/year only. `value` is in the tech's NATIVE capex input units
+# (Euro/kW for power, Euro/kWh for storage energy; for storage add
+# "capacity_type": "power"|"energy"). Empty list = off. Applied around run() below.
+RC_CAPEX_OVERRIDE = [
+    {"tech": "photovoltaics", "node": "SI", "year": 2050, "value": 280},
+    # {"tech": "nuclear", "node": "NL", "year": 2050, "value": 4500.0},
+    # {"tech": "battery", "node": "CH", "year": 2050, "capacity_type": "power", "value": 70.0},
+]
+
 #config["solver"]["solver_options"].pop("Crossover", None)
 #config["solver"]["solver_options"].pop("BarHomogeneous", None)
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")
@@ -114,7 +119,8 @@ with open(tmp_config, "w") as f:
     json.dump(config, f, indent=4)
 
 print(f"Running RC analysis (Primal Simplex, Presolve=0) -> {result_folder}")
-run(config=tmp_config, dataset=DATASET, folder_output=result_folder)
+with capex_file_override(os.path.abspath(DATASET), RC_CAPEX_OVERRIDE):
+    run(config=tmp_config, dataset=DATASET, folder_output=result_folder)
 os.remove(tmp_config)
 
 csv = os.path.join(result_folder, DATASET, "capacity_addition_analysis.csv")
