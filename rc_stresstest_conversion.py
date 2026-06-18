@@ -41,7 +41,9 @@ TIGHT_E2P = {"battery": 16, "pumped_hydro": 22, "salt_cavern_storage": 145}
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
-DATASET = os.path.join("ZEN-models", "data", "Crystal_Ball")
+# absolute paths: zen_garden.run() resolves a RELATIVE dataset/folder_output relative
+# to the (temp) config file's directory, not the cwd — absolute paths avoid that trap.
+DATASET = os.path.join(BASE_DIR, "ZEN-models", "data", "Crystal_Ball")
 DATA_NAME = os.path.basename(DATASET)
 
 
@@ -112,7 +114,8 @@ def select_cases(conv, n=N_CASES):
 
 def main():
     global ROOT
-    ROOT = f"./outputs_{datetime.now().strftime('%Y%m%d-%H%M%S')}_rc_stresstest"
+    ROOT = os.path.join(
+        BASE_DIR, f"outputs_{datetime.now().strftime('%Y%m%d-%H%M%S')}_rc_stresstest")
     os.makedirs(ROOT, exist_ok=True)
     print(f"RC-Stresstest (conversion) -> {ROOT}\n")
 
@@ -162,10 +165,19 @@ def main():
                 {"tech": tech, "node": node, "year": year, "value": float(value)}]
             return c
 
-        d_b = run_model(ov(capex_build), f"case{i:02d}_{tech}_{node}_build")
-        v_b = read_value(d_b, tech, node, yidx)
-        d_n = run_model(ov(capex_nobuild), f"case{i:02d}_{tech}_{node}_nobuild")
-        v_n = read_value(d_n, tech, node, yidx)
+        try:
+            d_b = run_model(ov(capex_build), f"case{i:02d}_{tech}_{node}_build")
+            v_b = read_value(d_b, tech, node, yidx)
+            d_n = run_model(ov(capex_nobuild), f"case{i:02d}_{tech}_{node}_nobuild")
+            v_n = read_value(d_n, tech, node, yidx)
+        except Exception as e:
+            print(f"   !! Lauf fehlgeschlagen ({e}) -> Fall uebersprungen")
+            results.append(dict(case=i, tech=tech, node=node, year=year, capex=C, rc=R,
+                                ratio_pct=round(r.ratio_reduction * 100, 3),
+                                capex_build=capex_build, value_build=np.nan, built_build=False,
+                                capex_nobuild=capex_nobuild, value_nobuild=np.nan,
+                                built_nobuild=False, result="ERROR"))
+            continue
 
         built_b = np.isfinite(v_b) and v_b > VALUE_BUILT_TOL
         built_n = np.isfinite(v_n) and v_n > VALUE_BUILT_TOL
