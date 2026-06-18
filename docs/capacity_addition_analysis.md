@@ -10,8 +10,19 @@ Das **Warum** der Reduced Costs steht in
 RHS-Perturbation in [`rc_lifetime_rhs_perturbation.md`](rc_lifetime_rhs_perturbation.md),
 die Degeneriertheits-Probleme in [`rc_analysis_known_issues.md`](rc_analysis_known_issues.md).
 
-> Alle Beispiele unten stammen aus einem realen Crystal-Ball-Lauf (1-Jahres-Snapshot,
-> $\delta = 10^{-3}$ GW).
+**Storage** wird gesondert behandelt (eigene Perturbation, Bündel-RC) —
+siehe [`rc_storage_power_energy.md`](rc_storage_power_energy.md) und §5 unten.
+
+**Downstream** (auf dieser CSV aufbauend): die hier beschriebenen Fälle werden als
+explizite `case`-Spalte pro Technologieart ausgegeben
+([`rc_capacity_addition_classified.md`](rc_capacity_addition_classified.md)) und als
+Heatmaps visualisiert ([`rc_heatmaps.md`](rc_heatmaps.md)). Siehe §8.
+
+> Die Beispiele/Häufigkeiten unten stammen aus einem früheren Crystal-Ball-Lauf
+> (1-Jahres-Snapshot, $\delta = 10^{-3}$ GW, ohne Storage-Perturbation). Die
+> aktuelle Produktions-Konfiguration nutzt $\delta = 10^{-4}$ GW **plus** die
+> Storage-Power-Perturbation (`rc_storage_power_perturbation = 10^{-4}`); die
+> Spalten/Fall-Logik bleiben identisch, nur die Zahlenwerte verschieben sich leicht.
 
 ---
 
@@ -124,6 +135,24 @@ Das hinterlässt **sichtbare, aber harmlose** Spuren:
 Faustregel: δ macht sich nur in der 4. Nachkommastelle von `capacity`/`rc` bemerkbar;
 es ist ein numerischer Tie-Break, **keine** Modelländerung.
 
+### Storage: eigene Perturbation (Lifetime-RHS-δ wirkt hier NICHT)
+
+Speicher sind aus der Lifetime-RHS-Perturbation **ausgenommen** und werden stattdessen
+über `rc_storage_power_perturbation` ($\text{yotta}$, hier $10^{-4}$ GW) behandelt
+([`rc_storage_power_energy.md`](rc_storage_power_energy.md)). Grund: Storage besteht aus
+zwei Kapazitäten (power, energy), die nur über den Betrieb koppeln — ein Phantom in
+`capacity` ließe sie entkoppelt (die e2p-Constraint liest `capacity_addition`, nicht
+`capacity`). Folgen für die CSV-Lesart bei **Greenfield-ungebauten** Speichern:
+
+- die Probe hebt **`capacity_addition[power]`** (= `value` der `power`-Zeile) auf
+  yotta → `value_power ≈ 10^{-4}` (**nicht 0**), und die e2p-Constraint zieht
+  `value_energy ≈ e2p · yotta` nach. Die Regel „`value = 0`, `capacity` trägt das δ"
+  aus §5 gilt für Storage also **nicht**.
+- der gelesene `rc` der `power`-Zeile ist die **Bündel-Distanz**
+  $C_\text{bundle}-V$ mit $C_\text{bundle}=\text{capex}_\text{power}+\text{e2p}\cdot\text{capex}_\text{energy}$,
+  nicht der reine Power-Own-Capex. Die Aufteilung auf power/energy steht in der
+  klassifizierten Storage-CSV (§8).
+
 ---
 
 ## 6. Schnell-Interpretation (Entscheidungsbaum)
@@ -155,6 +184,36 @@ value > 0 ?
    ceiling-reached und nicht-baubar sind *erwartete* Nullen, nur Fall (c) ist unsicher.
 5. δ um eine Größenordnung variieren → `rc`-Werte bleiben stabil (Beleg für
    strukturelle Selektion, nicht Tie-Break).
+
+---
+
+## 8. Downstream: klassifizierte Aufteilung & Heatmaps
+
+`save_capacity_addition_analysis()` schreibt zusätzlich zur Haupt-CSV (best-effort,
+am Ende):
+
+- **drei klassifizierte CSVs** pro Technologieart — `save_capacity_addition_classified()`
+  ([Doku](rc_capacity_addition_classified.md)): die oben hergeleiteten Fälle werden als
+  explizite `case`-Spalte ausgegeben, plus der originale CAPEX und der nötige
+  Senkungs-Anteil. Storage bekommt eine eigene Bündel-Struktur (power+energy in einer
+  Zeile).
+- **optional Heatmaps** — bei `config["analysis"]["generate_rc_heatmaps"] = True`
+  ([Doku](rc_heatmaps.md)).
+
+Mapping der hier beschriebenen Fälle auf die `case`-Spalte:
+
+| §3 / §4 Fall | `case` | in Heatmap |
+|---|---|---|
+| gebaut (Fall 1) | `built` | weiß |
+| Greenfield ungebaut, perturbiert (Fall 2) | `buildable_rc` | grün→rot (echte RC) |
+| Brownfield mit Platz (Fall 3) | `buildable_rc` | grün→rot (echte RC) |
+| Brownfield am Limit (Fall 4 / §4a) | `at_limit` | schwarz |
+| nicht baubar (Fall 5 / §4b) | `not_buildable` | schwarz |
+| Break-even / Rest-Degeneriertheit (§4c) | `breakeven_unreliable` | grau |
+| negative RC (Hinweis unten) | `blocked_profitable` | grau |
+
+Die unsicheren Fälle (`breakeven_unreliable`, `blocked_profitable`, Placeholder-Storage)
+tragen `rc_reliable = False` — bequemer Filter für belastbare Auswertungen.
 
 ---
 

@@ -223,6 +223,9 @@ class Analysis(Subscriptable):
     overwrite_output: bool = True
     output_format: str = "h5"
     earliest_year_of_data: int = 1900
+    # Opt-in: render RC heatmaps from the classified capacity-addition analyses
+    # at the end of postprocessing (calls rc_heatmaps.py for the scenario folder).
+    generate_rc_heatmaps: bool = False
     zen_garden_version: str = None
 
 

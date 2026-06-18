@@ -147,6 +147,12 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
             # pin the lifetime dual to the economically correct endpoint (no-op
             # unless solver.solver_options["rc_lifetime_rhs_perturbation"] is set)
             optimization_setup.perturb_lifetime_rhs_for_rc()
+            # optional +yotta lower bound on capacity_addition of storage POWER at
+            # unbuilt greenfield nodes; the energy-to-power-ratio constraint then
+            # pulls up a matching energy addition so the storage RC reflects the
+            # joint (power+energy) distance-to-build (no-op unless
+            # solver.solver_options["rc_storage_power_perturbation"] is set)
+            optimization_setup.perturb_storage_power_addition_for_rc()
             if optimization_setup.solver.use_scaling:
                 optimization_setup.scaling.run_scaling()
             elif (

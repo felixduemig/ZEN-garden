@@ -549,6 +549,39 @@ class Postprocess:
                 arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
             diff_an_series = arr.to_series().dropna()
 
+        # Dual of the energy-to-power-ratio (min) constraint. Relevant only for the
+        # storage-power perturbation (perturb_storage_power_addition_for_rc): there
+        # capacity_addition[power] is held at its raised lower bound (non-basic) and
+        # the constraint addition_energy - e2p_min*addition_power >= 0 binds. Its
+        # dual carries the cost of the energy that is forced up alongside the power,
+        # so it must enter the RC of the POWER component (coefficient -e2p_min on
+        # capacity_addition[power], hence + e2p_min * dual in the RC, mirroring the
+        # diffusion treatment below). index: (tech, node, year).
+        e2p_min_dual_series = None
+        e2p_min_param = getattr(params, "energy_to_power_ratio_min", None)
+        cname_e2p = "constraint_capacity_energy_to_power_ratio_min"
+        if cname_e2p in self.model.constraints:
+            arr = self.model.constraints[cname_e2p].dual
+            if self.solver.use_scaling:
+                labels = self.model.constraints[cname_e2p].labels.data
+                arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+            e2p_min_dual_series = arr.to_series().dropna()
+
+        # ratio_MAX dual — only nonzero when a finite energy_to_power_ratio_max is
+        # set (Path A: fixed ratio with ratio_min == ratio_max). Then the max
+        # constraint can bind at near-viable storage nodes (energy capped at the
+        # fixed duration); its dual must also enter the POWER reduced cost. Same
+        # structure as ratio_min: capacity_addition[power] has coefficient -e2p_max.
+        e2p_max_dual_series = None
+        e2p_max_param = getattr(params, "energy_to_power_ratio_max", None)
+        cname_e2p_max = "constraint_capacity_energy_to_power_ratio_max"
+        if cname_e2p_max in self.model.constraints:
+            arr = self.model.constraints[cname_e2p_max].dual
+            if self.solver.use_scaling:
+                labels = self.model.constraints[cname_e2p_max].labels.data
+                arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+            e2p_max_dual_series = arr.to_series().dropna()
+
         # Internal capex_specific lookup: (tech, ctype, node, year) -> value
         capex_lookup = {}
         for param_name in ["capex_specific_conversion", "capex_specific_storage",
@@ -690,9 +723,38 @@ class Postprocess:
                                     diff_contribution += (
                                         float(diff_an_series[mask_cn].iloc[0]) * tdr_fut * sr * kdr_val
                                     )
+
+                # Energy-to-power-ratio (min) dual contribution — POWER component of
+                # storage only. capacity_addition[power] has coefficient -e2p_min in
+                # the constraint, so its RC contribution is + e2p_min * dual (added,
+                # like diff_contribution). 0 for everything else (constraint absent,
+                # non-storage, energy component, or e2p_min unset/<=0).
+                e2p_contribution = 0.0
+                for _dual_series, _param in (
+                    (e2p_min_dual_series, e2p_min_param),
+                    (e2p_max_dual_series, e2p_max_param),
+                ):
+                    if (_dual_series is None or ctype != "power" or _param is None):
+                        continue
+                    try:
+                        e2p_val = float(np.squeeze(
+                            _param.sel(set_storage_technologies=tech).values))
+                    except Exception:
+                        e2p_val = 0.0
+                    if np.isfinite(e2p_val) and e2p_val > 0:
+                        mask = (
+                            (_dual_series.index.get_level_values(0) == tech)
+                            & (_dual_series.index.get_level_values(-2) == node)
+                            & (_dual_series.index.get_level_values(-1) == y_inv)
+                        )
+                        if mask.any():
+                            e2p_contribution += (
+                                float(_dual_series[mask].iloc[0]) * e2p_val
+                            )
+
                 result.append(
                     np.nan if np.isnan(elec_value)
-                    else cs - (elec_value - diff_contribution) / scaling
+                    else cs - (elec_value - diff_contribution - e2p_contribution) / scaling
                 )
 
             except Exception:
@@ -819,6 +881,22 @@ class Postprocess:
 
         self.save_rc_components()
 
+        # Per-technology-type, classified, visualization-ready split of the analysis
+        # (conversion / transport / storage). Best-effort: a failure here must not
+        # break the main analysis output above.
+        try:
+            self.save_capacity_addition_classified(df)
+        except Exception as e:
+            logging.warning(f"Could not save classified capacity addition analysis: {e}")
+
+        # Optional: render the RC heatmaps for this scenario folder. Opt-in via
+        # config analysis.generate_rc_heatmaps. Best-effort.
+        if getattr(self.analysis, "generate_rc_heatmaps", False):
+            try:
+                self._generate_rc_heatmaps()
+            except Exception as e:
+                logging.warning(f"Could not generate RC heatmaps: {e}")
+
     def save_rc_components(self):
         """Saves the per-year dual contributions to the RC to rc_components.csv.
 
@@ -899,6 +977,20 @@ class Postprocess:
                 labels = self.model.constraints["constraint_technology_diffusion_limit"].labels.data
                 arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
             diff_an_series = arr.to_series().dropna()
+
+        # Energy-to-power-ratio (min) dual — POWER component of storage only
+        # (see _compute_rc_capex_equivalent). index: (tech, node, year).
+        e2p_dual_series = {}   # ratio_type -> (param, dual_series)
+        for ratio_type in ("min", "max"):
+            param = getattr(params, f"energy_to_power_ratio_{ratio_type}", None)
+            cname = f"constraint_capacity_energy_to_power_ratio_{ratio_type}"
+            if param is None or cname not in self.model.constraints:
+                continue
+            arr = self.model.constraints[cname].dual
+            if self.solver.use_scaling:
+                labels = self.model.constraints[cname].labels.data
+                arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+            e2p_dual_series[ratio_type] = (param, arr.to_series().dropna())
 
         rows = []
         tech_cache = {}
@@ -1020,6 +1112,37 @@ class Postprocess:
                                     "contribution_to_rc": raw_dual * coeff / scaling,
                                 })
 
+                # ── Energy-to-power-ratio (min/max) contributions ───────────
+                # POWER component of storage only; coefficient = e2p_ratio (the
+                # forced energy per unit power). Reproduces the e2p term added in
+                # _compute_rc_capex_equivalent. ratio_max only contributes when a
+                # finite ratio_max is set (Path A: fixed ratio).
+                if ctype == "power":
+                    for ratio_type, (param, e2p_ds) in e2p_dual_series.items():
+                        try:
+                            e2p_val = float(np.squeeze(
+                                param.sel(set_storage_technologies=tech).values))
+                        except Exception:
+                            e2p_val = 0.0
+                        if not (np.isfinite(e2p_val) and e2p_val > 0):
+                            continue
+                        mask = (
+                            (e2p_ds.index.get_level_values(0) == tech)
+                            & (e2p_ds.index.get_level_values(-2) == node)
+                            & (e2p_ds.index.get_level_values(-1) == y_inv)
+                        )
+                        if mask.any():
+                            raw_dual = float(e2p_ds[mask].iloc[0])
+                            rows.append({
+                                **base,
+                                "constraint_type":    f"e2p_ratio_{ratio_type}",
+                                "component_year":     y_inv,
+                                "raw_dual":           raw_dual,
+                                "coefficient":        e2p_val,
+                                "discount_factor":    np.nan,
+                                "contribution_to_rc": raw_dual * e2p_val / scaling,
+                            })
+
             except Exception:
                 continue
 
@@ -1031,6 +1154,306 @@ class Postprocess:
         csv_file = self.name_dir.joinpath("rc_components.csv")
         out_df.to_csv(csv_file, index=False)
         logging.info(f"RC components saved to {csv_file} ({len(rows)} rows)")
+
+    # ---------------------------------------------------------------------------
+    # Classified, per-technology-type RC analysis (visualization-ready)
+    # ---------------------------------------------------------------------------
+
+    def _capex_specific_lookup(self):
+        """Returns {(tech, ctype, node, year) -> capex} and {(tech, node, year) -> capex}.
+
+        Source: the capex_specific_{conversion,storage,transport} parameters — the
+        specific capex the model uses for the planning year (= the value in the capex
+        input CSVs, multiplied by fraction_year). This is exactly the term the reduced
+        cost is measured against: rc_capex_equivalent = capex_specific - operating_value.
+        Divide by fraction_year to recover Euro/kW (see save_capacity_addition_analysis).
+
+        For storage the parameter carries BOTH the power and the energy component via
+        the set_capacity_types dimension, so the (tech, ctype, ...) key resolves the
+        energy capex for ctype='energy' and the power capex for ctype='power'.
+        """
+        params = self.optimization_setup.parameters
+        lookup = {}
+        for param_name in ("capex_specific_conversion", "capex_specific_storage",
+                           "capex_specific_transport"):
+            p = getattr(params, param_name, None)
+            if p is None:
+                continue
+            try:
+                for idx, val in p.to_series().dropna().items():
+                    if not isinstance(idx, tuple):
+                        idx = (idx,)
+                    tech_name, year_val, node_val = idx[0], idx[-1], idx[-2]
+                    ctype_val = idx[1] if len(idx) == 4 else None
+                    lookup.setdefault((tech_name, node_val, year_val), float(val))
+                    lookup.setdefault((tech_name, ctype_val, node_val, year_val), float(val))
+            except Exception:
+                continue
+        return lookup
+
+    def save_capacity_addition_classified(self, df):
+        """Writes per-technology-type, classified RC analyses for visualization.
+
+        Splits capacity_addition_analysis into three CSVs by technology class and adds,
+        per row, the *case* and the original specific capex from the capex input files
+        [Euro/kW] (the value the RC is subtracted from), so one can answer "where are
+        unbuilt technologies actually close?".
+
+        Cases (see docs/capacity_addition_analysis.md §3/§6):
+          built                 value > 0 — already deployed, rc ~ 0
+          buildable_rc          value ~ 0, head-room left, rc > 0  -> honest distance ✅
+          at_limit              value ~ 0, capacity ~ ceiling  -> no expansion possible
+          not_buildable         value ~ 0, ceiling ~ 0  -> blocked/forbidden, ignore rc
+          blocked_profitable    value ~ 0, rc < 0  -> blocked but profitable (separate topic)
+          breakeven_unreliable  value ~ 0, head-room, rc ~ 0  -> degenerate, rc not reliable
+
+        Conversion/transport (single 'power' component): the extra columns are
+          capex_specific_input_units  original capex [Euro/kW]
+          ratio_reduction             rc / capex  = fraction the capex must drop to build
+                                      (only for case in {built, buildable_rc})
+
+        Storage uses a DEDICATED structure (one row per tech/node/year, carried by the
+        POWER row; see docs/rc_storage_power_energy.md). The reduced cost read from the
+        power row is the *bundle* distance C_bundle - V_bundle, with
+        C_bundle = capex_power + D * capex_energy  (D = energy_to_power_ratio [h]).
+        Closing the gap by subtracting the SAME absolute value Δ from both capex needs
+            Δ_P + D * Δ_E = rc_power ,  Δ_P = Δ_E = Δ  =>  Δ = rc_power / (1 + D).
+        Reported columns:
+          rc_mathematical                the bundle RC from the power row [Euro/kW]
+          e2p                            D, the duration factor [h]
+          capex_power / capex_energy     original capex [Euro/kW] / [Euro/kWh]
+          C_bundle                       capex_power + e2p * capex_energy [Euro/kW]
+          RC_power / RC_energy           Δ (same absolute reduction on both)
+          ratio_power_reduction          Δ / capex_power  (differs from ...)
+          ratio_energy_reduction         Δ / capex_energy
+          ratio_reduction_proportional   f = rc_power / C_bundle  (both capex cut same %)
+
+        Outputs (next to capacity_addition_analysis.csv):
+          capacity_addition_analysis_conversion.csv
+          capacity_addition_analysis_transport.csv
+          capacity_addition_analysis_storage.csv
+        """
+        # ── tolerances ──────────────────────────────────────────────────────
+        CEIL_ZERO = 1e-6     # ceiling ~ 0  -> nothing can be built
+        CEIL_REL  = 1e-4     # |capacity - ceiling| (relative) -> sitting at the limit
+        RC_ZERO   = 1e-6     # |rc| ~ 0
+        VALUE_TOL = 1e-6     # value > tol -> built (non-storage)
+        # storage power probe sits at the raised floor (yotta); read it from the
+        # solver options if still present, else default. Real builds are >> yotta.
+        yotta = 1e-4
+        try:
+            so = getattr(self.solver, "solver_options", {}) or {}
+            yv = so.get("rc_storage_power_perturbation")
+            if yv:
+                yotta = float(yv)
+        except Exception:
+            pass
+        STORAGE_BUILT_TOL = max(5.0 * yotta, VALUE_TOL)
+
+        params = self.optimization_setup.parameters
+        sets = self.optimization_setup.sets
+
+        try:
+            fraction_year = (self.system.unaggregated_time_steps_per_year
+                             / self.system.total_hours_per_year)
+        except Exception:
+            fraction_year = 1.0
+
+        # tech -> technology class. Retrofitting technologies (e.g. *_CCS) are a
+        # conversion subclass with a single 'power' component, so they are folded
+        # into 'conversion' (mapped last so they win over a generic membership).
+        type_of_tech = {}
+        for sname, tname in (("set_conversion_technologies", "conversion"),
+                             ("set_transport_technologies", "transport"),
+                             ("set_storage_technologies", "storage"),
+                             ("set_retrofitting_technologies", "conversion")):
+            try:
+                for t in sets[sname]:
+                    type_of_tech[str(t)] = tname
+            except Exception:
+                continue
+
+        # storage tech -> D (energy_to_power_ratio); no-probe/placeholder techs -> nan
+        e2p_of_tech = {}
+        e2p_param = getattr(params, "energy_to_power_ratio_min", None)
+        try:
+            storage_techs = list(sets["set_storage_technologies"])
+        except Exception:
+            storage_techs = []
+        for t in storage_techs:
+            v = np.nan
+            if e2p_param is not None:
+                try:
+                    v = float(np.squeeze(e2p_param.sel(set_storage_technologies=t).values))
+                except Exception:
+                    v = np.nan
+            e2p_of_tech[str(t)] = v if (np.isfinite(v) and v > 0) else np.nan
+
+        capex_lookup = self._capex_specific_lookup()
+
+        work = df.reset_index()
+        idx_cols = list(work.columns)[:4]
+        tcol, ccol, ncol, ycol = idx_cols
+
+        def capex_input(tech, ctype, node, year):
+            cs = capex_lookup.get((tech, ctype, node, year),
+                 capex_lookup.get((tech, node, year), np.nan))
+            return (cs / fraction_year) if (cs is not None and np.isfinite(cs)) else np.nan
+
+        work["tech_type"] = work[tcol].map(lambda t: type_of_tech.get(str(t), "unknown"))
+        work["capex_specific_input_units"] = [
+            capex_input(r[tcol], r[ccol], r[ncol], r[ycol])
+            for _, r in work.iterrows()
+        ]
+
+        def classify(value, capacity, ceiling, rc, built_tol):
+            v = value if np.isfinite(value) else 0.0
+            cap = capacity if np.isfinite(capacity) else 0.0
+            rcv = rc if np.isfinite(rc) else 0.0
+            inf_ceiling = not np.isfinite(ceiling)
+            if v > built_tol:
+                return "built"
+            if (not inf_ceiling) and ceiling <= CEIL_ZERO:
+                return "not_buildable"
+            if (not inf_ceiling) and cap > CEIL_ZERO \
+                    and abs(cap - ceiling) <= CEIL_REL * max(1.0, abs(ceiling)):
+                return "at_limit"
+            if rcv > RC_ZERO:
+                return "buildable_rc"
+            if rcv < -RC_ZERO:
+                return "blocked_profitable"
+            return "breakeven_unreliable"
+
+        # ── non-storage: conversion & transport ─────────────────────────────
+        ns = work[work["tech_type"].isin(["conversion", "transport"])].copy()
+        if not ns.empty:
+            ns["case"] = [
+                classify(r["value"], r["capacity"], r["capacity_ceiling"],
+                         r["rc_capex_equivalent_input_units"], VALUE_TOL)
+                for _, r in ns.iterrows()
+            ]
+
+            def ns_ratio(r):
+                cs = r["capex_specific_input_units"]
+                if r["case"] in ("built", "buildable_rc") and np.isfinite(cs) and cs > CEIL_ZERO:
+                    return r["rc_capex_equivalent_input_units"] / cs
+                return np.nan
+
+            ns["ratio_reduction"] = [ns_ratio(r) for _, r in ns.iterrows()]
+            ns["rc_reliable"] = ns["case"].isin(["built", "buildable_rc"])
+
+            out_cols = [tcol, ccol, ncol, ycol, "tech_type", "unit", "value",
+                        "capacity", "capacity_ceiling", "vbasis", "case",
+                        "capex_specific_input_units", "rc_capex_equivalent",
+                        "rc_capex_equivalent_input_units", "ratio_reduction",
+                        "rc_reliable"]
+            for tname in ("conversion", "transport"):
+                sub = ns[ns["tech_type"] == tname]
+                if sub.empty:
+                    continue
+                fpath = self.name_dir.joinpath(f"capacity_addition_analysis_{tname}.csv")
+                sub[out_cols].to_csv(fpath, index=False)
+                logging.info(f"Classified {tname} RC analysis saved to {fpath} "
+                             f"({len(sub)} rows)")
+
+        # ── storage: bundle structure (one row per tech/node/year) ──────────
+        st = work[work["tech_type"] == "storage"].copy()
+        if not st.empty:
+            pw = st[st[ccol] == "power"].set_index([tcol, ncol, ycol])
+            en = st[st[ccol] == "energy"].set_index([tcol, ncol, ycol])
+            rows = []
+            for key in pw.index.union(en.index):
+                tech = key[0]
+                p = pw.loc[key] if key in pw.index else None
+                e = en.loc[key] if key in en.index else None
+                D = e2p_of_tech.get(str(tech), np.nan)
+
+                v_p = float(p["value"]) if p is not None else np.nan
+                cap_p = float(p["capacity"]) if p is not None else np.nan
+                ceil_p = float(p["capacity_ceiling"]) if p is not None else np.nan
+                rc_p = float(p["rc_capex_equivalent_input_units"]) if p is not None else np.nan
+                cx_p = float(p["capex_specific_input_units"]) if p is not None else np.nan
+                cx_e = float(e["capex_specific_input_units"]) if e is not None else np.nan
+
+                case = (classify(v_p, cap_p, ceil_p, rc_p, STORAGE_BUILT_TOL)
+                        if p is not None else "no_power_row")
+
+                # bundle decomposition — same absolute value Δ subtracted from both
+                C_bundle = (cx_p + D * cx_e) if (np.isfinite(D) and np.isfinite(cx_p)
+                                                 and np.isfinite(cx_e)) else np.nan
+                delta = (rc_p / (1.0 + D)) if (np.isfinite(D) and np.isfinite(rc_p)) else np.nan
+                ratio_p = (delta / cx_p) if (np.isfinite(delta) and np.isfinite(cx_p)
+                                             and cx_p > CEIL_ZERO) else np.nan
+                ratio_e = (delta / cx_e) if (np.isfinite(delta) and np.isfinite(cx_e)
+                                             and cx_e > CEIL_ZERO) else np.nan
+                f_prop = (rc_p / C_bundle) if (np.isfinite(rc_p) and np.isfinite(C_bundle)
+                                               and C_bundle > CEIL_ZERO) else np.nan
+
+                placeholder = (str(tech) in ("oil_storage", "natural_gas_storage")) \
+                    or (not np.isfinite(D))
+                rc_reliable = (case in ("built", "buildable_rc")) and (not placeholder)
+                # decomposition is only meaningful for actionable cases
+                if case not in ("built", "buildable_rc"):
+                    delta = ratio_p = ratio_e = f_prop = np.nan
+
+                rows.append({
+                    tcol: tech, ncol: key[1], ycol: key[2],
+                    "tech_type": "storage",
+                    "unit_power": (p["unit"] if p is not None else np.nan),
+                    "unit_energy": (e["unit"] if e is not None else np.nan),
+                    "value_power": v_p,
+                    "value_energy": (float(e["value"]) if e is not None else np.nan),
+                    "capacity_power": cap_p,
+                    "capacity_energy": (float(e["capacity"]) if e is not None else np.nan),
+                    "capacity_ceiling_power": ceil_p,
+                    "capacity_ceiling_energy": (float(e["capacity_ceiling"])
+                                                if e is not None else np.nan),
+                    "vbasis_power": (p["vbasis"] if p is not None else np.nan),
+                    "case": case,
+                    "rc_mathematical": rc_p,
+                    "e2p": D,
+                    "capex_power": cx_p,
+                    "capex_energy": cx_e,
+                    "C_bundle": C_bundle,
+                    "RC_power": delta,
+                    "RC_energy": delta,
+                    "ratio_power_reduction": ratio_p,
+                    "ratio_energy_reduction": ratio_e,
+                    "ratio_reduction_proportional": f_prop,
+                    "rc_reliable": rc_reliable,
+                })
+            st_df = pd.DataFrame(rows).sort_values([tcol, ncol, ycol])
+            fpath = self.name_dir.joinpath("capacity_addition_analysis_storage.csv")
+            st_df.to_csv(fpath, index=False)
+            logging.info(f"Classified storage RC analysis saved to {fpath} "
+                         f"({len(st_df)} rows)")
+
+    def _generate_rc_heatmaps(self):
+        """Render the RC heatmaps for this scenario's classified analyses.
+
+        Opt-in via config analysis.generate_rc_heatmaps. Loads the standalone
+        rc_heatmaps.py (repository root) by file path, so the plotting logic has a
+        single source of truth and the standalone stays usable on its own with
+        custom options (--vmax, --storage-metric, ...). Operates on self.name_dir,
+        which already holds the capacity_addition_analysis_*.csv written above.
+        """
+        import importlib.util
+        # rc_heatmaps.py sits at the repo root (sibling of the zen_garden package).
+        candidates = [
+            Path(__file__).resolve().parents[2] / "rc_heatmaps.py",
+            Path.cwd() / "rc_heatmaps.py",
+        ]
+        script = next((p for p in candidates if p.is_file()), None)
+        if script is None:
+            logging.warning("generate_rc_heatmaps: rc_heatmaps.py not found "
+                            "(expected at repository root) — heatmaps skipped")
+            return
+        spec = importlib.util.spec_from_file_location("rc_heatmaps", str(script))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        mod.run(str(self.name_dir), vmax=100.0, storage_metric="proportional",
+                annotate=True)
+        logging.info(f"RC heatmaps generated under {self.name_dir.joinpath('heatmaps')}")
 
     # ---------------------------------------------------------------------------
     # Boundary shadow prices

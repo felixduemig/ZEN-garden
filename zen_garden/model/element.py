@@ -100,6 +100,11 @@ class Element:
         # construct Params
         t0 = time.perf_counter()
         cls.construct_params(optimization_setup)
+        # optional config-driven parameter overrides for RC experiments
+        # (per-node capex, tight energy-to-power ratio). Must run after the
+        # parameters exist and before vars/constraints/objective consume them.
+        # No-op unless the corresponding solver_options keys are set.
+        optimization_setup.apply_parameter_overrides_for_rc()
         t1 = time.perf_counter()
         if optimization_setup.solver.run_diagnostics:
             logging.info(f"Time to construct Params: {t1 - t0:0.1f} seconds")

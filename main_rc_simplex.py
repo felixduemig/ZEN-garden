@@ -56,7 +56,7 @@ config["solver"].setdefault("solver_options", {})
 config["solver"]["name"] = "gurobi"
 config["solver"]["save_duals"] = True
 config["solver"]["save_reduced_costs"] = True
-config["solver"]["solver_options"]["Method"] = -1 
+config["solver"]["solver_options"]["Method"] = 2 
 config["solver"]["solver_options"]["Crossover"] = 1
 config["solver"]["use_scaling"] = 0   
 config["solver"]["solver_options"]["Presolve"] = 0
@@ -74,7 +74,37 @@ config["solver"]["solver_options"]["rc_perturbation"] = 0
 # cannot select within the dual interval. Units = capacity units (GW). Choose
 # > solver feasibility tolerance (>> 1e-6) and smaller than the smallest positive
 # capacity_limit. Popped before being passed to Gurobi. Set to 0/None to disable.
-config["solver"]["solver_options"]["rc_lifetime_rhs_perturbation"] = 1e-4
+config["solver"]["solver_options"]["rc_lifetime_rhs_perturbation"] = 0
+# +yotta lower bound on capacity_addition of STORAGE POWER at unbuilt greenfield
+# nodes. The energy_to_power_ratio_min constraint then forces a matching energy
+# addition, so the storage RC reflects the joint (power+energy) distance-to-build
+# (read it from the power row; the energy row is mechanically 0). Storage is
+# excluded from rc_lifetime_rhs_perturbation. Path A (active): a FIXED ratio is set
+# per storage tech (energy_to_power_ratio_min = ratio_max = D: battery 16h,
+# pumped_hydro 22h, salt_cavern 145h) so rc_power is the unambiguous bundle distance
+# at duration D. See docs/rc_storage_power_energy.md. Units = GW. Popped before
+# Gurobi. 0/None = off.
+config["solver"]["solver_options"]["rc_storage_power_perturbation"] = 0
+# Tight (fixed) energy-to-power ratio per storage tech, set from HERE instead of
+# hard-coded in the dataset (dataset stays at its loose default min=0/max=inf).
+# Sets energy_to_power_ratio_min = ratio_max = duration[h] -> forces a fixed
+# duration AND enables the storage-power perturbation above. {} or removal = off.
+# Applied in optimization_setup.apply_parameter_overrides_for_rc() (popped before
+# Gurobi). See docs/rc_storage_power_energy.md.
+#config["solver"]["solver_options"]["rc_tight_e2p"] = {
+#    "battery": 16,
+#    "pumped_hydro": 22,
+#    "salt_cavern_storage": 145,
+#}
+# Per-(tech, node, year) capex override, set from HERE instead of editing the
+# dataset CSV. RC is a per-node quantity, so this moves the reduced cost of a
+# SINGLE node/year only. `value` is in input-file units (Euro/kW); for storage add
+# "capacity_type": "power"|"energy". Applied in apply_parameter_overrides_for_rc()
+# (popped before Gurobi). Empty list / removal = off. Example (commented):
+# config["solver"]["solver_options"]["rc_capex_override"] = [
+#     {"tech": "nuclear", "node": "NL", "year": 2050, "value": 4500.0},
+#     {"tech": "battery", "node": "CH", "year": 2050, "capacity_type": "power", "value": 70.0},
+# ]
 #config["solver"]["solver_options"].pop("Crossover", None)
 #config["solver"]["solver_options"].pop("BarHomogeneous", None)
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")

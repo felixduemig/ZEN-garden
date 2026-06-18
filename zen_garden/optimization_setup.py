@@ -661,6 +661,114 @@ class OptimizationSetup(object):
             self.energy_system.set_base_time_steps = new_base_time_steps_horizon
             self.energy_system.set_time_steps_yearly = time_steps_yearly_horizon
 
+    def apply_parameter_overrides_for_rc(self):
+        """Apply optional config-driven parameter overrides for RC experiments.
+
+        Hooked into Element.construct_model_components() AFTER construct_params and
+        BEFORE construct_vars/constraints/objective, so the overridden values flow
+        into the capex cost terms and the energy-to-power-ratio constraints. No-op
+        unless the keys are set. Both keys are popped so they are not forwarded to
+        the solver.
+
+        config solver.solver_options:
+          rc_capex_override : list of dicts, each
+              {"tech", "node", "year", "value"[, "capacity_type"]}.
+            Sets capex_specific_<class>[tech,(capacity_type,)node,year] so that it
+            corresponds to `value` in input-file units (Euro/kW). Lets one move the
+            reduced cost of a SINGLE node/year without touching the dataset (RC is a
+            per-node quantity). Exact for kW-reference techs (the normal case).
+          rc_tight_e2p : dict {tech: duration_h}. Fixes
+            energy_to_power_ratio_min = energy_to_power_ratio_max = duration for that
+            storage technology (forces a fixed duration and enables the storage-power
+            RC perturbation). Empty/absent = off.
+        """
+        so = self.solver.solver_options
+        capex_ov = so.pop("rc_capex_override", None)
+        tight_e2p = so.pop("rc_tight_e2p", None)
+        if not capex_ov and not tight_e2p:
+            return
+
+        try:
+            fraction_year = (self.system.unaggregated_time_steps_per_year
+                             / self.system.total_hours_per_year)
+        except Exception:
+            fraction_year = 1.0
+        try:
+            ref_year = int(self.system.reference_year)
+            interval = int(self.system.interval_between_years) or 1
+        except Exception:
+            ref_year, interval = 0, 1
+
+        def _dim(dims, *needles):
+            return next((d for d in dims for n in needles if n in d), None)
+
+        # ---- per-(tech, node, year) capex overrides --------------------------
+        if capex_ov:
+            class_param = {"conversion": "capex_specific_conversion",
+                           "transport": "capex_specific_transport",
+                           "storage": "capex_specific_storage"}
+
+            def tech_class(t):
+                for cls_, sname in (("conversion", "set_conversion_technologies"),
+                                    ("transport", "set_transport_technologies"),
+                                    ("storage", "set_storage_technologies"),
+                                    ("conversion", "set_retrofitting_technologies")):
+                    try:
+                        if t in self.sets[sname]:
+                            return cls_
+                    except Exception:
+                        pass
+                return None
+
+            for entry in capex_ov:
+                try:
+                    tech, node = entry["tech"], entry["node"]
+                    val, year = float(entry["value"]), int(entry["year"])
+                except Exception as e:
+                    logging.warning(f"rc_capex_override: bad entry {entry} ({e}) — skipped")
+                    continue
+                cls_ = tech_class(tech)
+                p = getattr(self.parameters, class_param.get(cls_, ""), None) if cls_ else None
+                if p is None:
+                    logging.warning(f"rc_capex_override: tech '{tech}' not found / no "
+                                    f"capex parameter — skipped")
+                    continue
+                dims = list(p.dims)
+                sel = {_dim(dims, "technolog"): tech,
+                       _dim(dims, "node", "location", "edge"): node,
+                       _dim(dims, "year"): (year - ref_year) // interval}
+                ctype_dim = _dim(dims, "capacity_type")
+                if ctype_dim is not None:
+                    sel[ctype_dim] = entry.get("capacity_type", "power")
+                model_val = val * fraction_year
+                try:
+                    cur = p.loc[sel]
+                    # preserve NaN structure (e.g. unused set_capex_linear segments)
+                    p.loc[sel] = cur.where(np.isnan(cur), model_val)
+                    logging.info(f"rc_capex_override: {class_param[cls_]}[{sel}] -> "
+                                 f"{model_val} (input {val} * fraction_year {fraction_year})")
+                except Exception as e:
+                    logging.warning(f"rc_capex_override: could not set {sel} on "
+                                    f"{class_param[cls_]}: {e}")
+
+        # ---- fixed (tight) energy-to-power ratio per storage tech ------------
+        if tight_e2p:
+            e2p_min = getattr(self.parameters, "energy_to_power_ratio_min", None)
+            e2p_max = getattr(self.parameters, "energy_to_power_ratio_max", None)
+            if e2p_min is None or e2p_max is None:
+                logging.warning("rc_tight_e2p: energy_to_power_ratio params missing — skipped")
+            else:
+                sdim = _dim(list(e2p_min.dims), "technolog")
+                for tech, dur in dict(tight_e2p).items():
+                    try:
+                        d = float(dur)
+                        e2p_min.loc[{sdim: tech}] = d
+                        e2p_max.loc[{sdim: tech}] = d
+                        logging.info(f"rc_tight_e2p: '{tech}' duration fixed to {d} h "
+                                     f"(energy_to_power_ratio_min = max = {d})")
+                    except Exception as e:
+                        logging.warning(f"rc_tight_e2p: could not set '{tech}': {e}")
+
     def perturb_objective_for_rc(self):
         """Add +eps * sum(capacity_addition) to the objective to break dual
         degeneracy at unbuilt technologies.
@@ -764,7 +872,16 @@ class OptimizationSetup(object):
             # docstring explains why both conditions are required to stay
             # feasible).
             is_greenfield = np.abs(rhs_da) < 1e-9
-            add = xr.where(is_greenfield & (ceiling >= delta), float(delta), 0.0)
+            # Storage is handled separately by perturb_storage_power_addition_for_rc():
+            # the lifetime-RHS phantom lands in *capacity*, but the energy-to-power
+            # ratio constraint reads *capacity_addition*, so a capacity-side phantom
+            # would leave the two storage components decoupled. Exclude all storage
+            # technologies here so the two perturbations do not overlap.
+            storage_techs = list(self.sets["set_storage_technologies"])
+            is_storage = rhs_da["set_technologies"].isin(storage_techs)
+            add = xr.where(
+                is_greenfield & (ceiling >= delta) & ~is_storage, float(delta), 0.0
+            )
             add = add.broadcast_like(rhs_da).transpose(*rhs_da.dims)
             add_data = add.data
         except Exception as exc:
@@ -781,6 +898,121 @@ class OptimizationSetup(object):
             f"RC perturbation: added +{delta} to RHS of {name} "
             f"({n_perturbed}/{n_total} entries perturbed; "
             f"{n_total - n_perturbed} skipped for head-room < delta)"
+        )
+
+    def perturb_storage_power_addition_for_rc(self):
+        """Force a tiny lower bound (yotta) on capacity_addition of storage POWER
+        at unbuilt greenfield nodes so the energy-to-power-ratio constraint pulls up
+        a matching energy addition — making the storage reduced cost reflect the
+        *joint* (power+energy) distance-to-build instead of the decoupled
+        per-component own-capex.
+
+        Why storage needs its own knob (see docs/rc_storage_power_energy.md):
+        storage is built as two separate capacities (power, energy) that couple only
+        through operation. At an unbuilt node both are 0, so the marginal value of
+        either component alone is 0 and each per-component reduced cost collapses to
+        its own (annualised) capex. The lifetime-RHS perturbation cannot fix this:
+        it places the phantom delta in *capacity*, while
+        constraint_capacity_energy_to_power_ratio_min reads *capacity_addition*.
+        With capacity_addition still 0 the ratio reads 0 >= 0 and its dual is 0, so
+        the two components stay decoupled.
+
+        Mechanism: raise the lower bound of capacity_addition[power] to yotta at
+        genuinely unbuilt greenfield storage nodes. The ratio constraint then forces
+        capacity_addition[energy] >= e2p_min * yotta, i.e. a tiny *functional* probe
+        storage of duration e2p_min. Because capacity_addition[power] sits at its
+        (raised) lower bound it stays NON-BASIC -> its reduced cost is well defined
+        and equals the joint bundle distance
+        (capex_power + e2p_min * capex_energy - V). The matching energy addition is
+        basic -> its reduced cost is mechanically 0, so the bundle distance is read
+        off the POWER row. As yotta -> 0 the primal optimum is unchanged.
+
+        Note: power (the small component) is perturbed and energy (= duration *
+        power, the large one) follows, so the forced energy = e2p_min * yotta stays
+        well above the solver tolerance; perturbing energy instead would shrink the
+        forced power by the duration and drop it below tolerance for long-duration
+        storage.
+
+        Only applied where ALL hold:
+          * technology is a storage technology and capacity_type == 'power',
+          * greenfield: capacity_existing == 0,
+          * energy_to_power_ratio_min is finite and > 0 (else no energy follows ->
+            would create a power-only probe),
+          * head-room for the forced power (power_ceiling >= yotta) AND for the
+            forced energy (energy_ceiling >= e2p_min * yotta). This skips blocked
+            techs (e.g. capacity_limit == 0) and keeps the model feasible.
+
+        Storage is excluded from perturb_lifetime_rhs_for_rc() so the two
+        perturbations do not overlap. The dual of the ratio constraint enters the
+        reconstructed RC in postprocess._compute_rc_capex_equivalent(); both must be
+        kept consistent.
+
+        Controlled via config:
+        solver.solver_options["rc_storage_power_perturbation"] = <yotta> in capacity
+        units (e.g. GW). Choose > solver feasibility tolerance (>> 1e-6) and smaller
+        than the smallest positive capacity_limit. Popped here so it is not forwarded
+        to Gurobi. Set to None/0 to disable.
+        """
+        yotta = self.solver.solver_options.pop("rc_storage_power_perturbation", None)
+        if not yotta:
+            return
+        storage_techs = list(self.sets["set_storage_technologies"])
+        if not storage_techs:
+            return
+        var = self.model.variables["capacity_addition"]
+        try:
+            lower = var.lower
+            # head-room ceiling = min(capacity variable upper bound, capacity_limit),
+            # aligned to the capacity_addition index (same dims).
+            cap_upper = xr.align(
+                lower, self.model.variables["capacity"].upper, join="left"
+            )[1].fillna(np.inf)
+            cap_limit = xr.align(
+                lower, self.parameters.capacity_limit, join="left"
+            )[1].fillna(np.inf)
+            ceiling = np.minimum(cap_upper, cap_limit)
+            # existing capacity (greenfield where 0); read from the (storage-
+            # unperturbed) lifetime-constraint RHS so it is index-aligned.
+            existing = xr.align(
+                lower, self.model.constraints["constraint_technology_lifetime"].rhs,
+                join="left",
+            )[1].fillna(0.0)
+            # energy_to_power_ratio_min per technology (= min duration in hours);
+            # 0 for technologies where it is unset -> excluded below.
+            e2p = self.parameters.energy_to_power_ratio_min.rename(
+                {"set_storage_technologies": "set_technologies"}
+            )
+            e2p = e2p.reindex(
+                set_technologies=lower.indexes["set_technologies"], fill_value=0.0
+            )
+            # energy-side ceiling mapped onto every (tech, node, year) so the
+            # power row can check that the *forced* energy fits.
+            ceiling_energy = ceiling.sel(set_capacity_types="energy")
+
+            is_power = lower["set_capacity_types"] == "power"
+            is_storage = lower["set_technologies"].isin(storage_techs)
+            greenfield = existing < 1e-9
+            e2p_ok = (e2p > 0) & np.isfinite(e2p)
+            power_room = ceiling >= yotta
+            energy_room = ceiling_energy >= (e2p * yotta)
+
+            apply = (
+                is_power & is_storage & greenfield & e2p_ok & power_room & energy_room
+            )
+            apply = apply.broadcast_like(lower).transpose(*lower.dims)
+            new_lower = xr.where(apply, float(yotta), lower)
+        except Exception as exc:
+            logging.error(
+                f"RC storage-power perturbation: guard failed ({exc}); skipping "
+                f"the perturbation entirely (safer than risking infeasibility)."
+            )
+            return
+        n_perturbed = int(apply.sum())
+        var.lower = new_lower
+        logging.info(
+            f"RC perturbation: raised capacity_addition[storage,power] lower bound "
+            f"to +{yotta} at {n_perturbed} greenfield storage nodes "
+            f"(energy follows via energy_to_power_ratio_min)."
         )
 
     def solve(self):
