@@ -113,6 +113,15 @@ unterschiedlicher Prozentsatz). Für eine *einzelne* Heatmap-Kennzahl bietet sic
 > `salt_cavern_storage` ist `capex_power = 0` → `ratio_power_reduction = NaN`
 > (Energy-Ratio bleibt gültig).
 
+> **Multi-Year-Carry-over (wichtig):** In Mehrjahres-Modellen **persistiert** ein in
+> einem früheren Jahr gebautes Storage über seine Lifetime. In Folgejahren ist
+> `value_power` dann nur die erzwungene yotta-Probe, während `capacity_power` schon den
+> Vorjahres-Bau trägt. Würde die Probe hier greifen, ergäbe sich eine **Phantom-RC**
+> (oft `ratio > 100 %`). Erkennung: `capacity_power − value_power > 1e-2` (über den
+> Perturbations-Artefakten, unter jedem echten Bau) → die Zeile wird als **`built`**
+> (carry-over) markiert und die Bündel-RC auf `NaN` gesetzt. So zeigt die Heatmap diese
+> Jahre korrekt als „gebaut" (weiß) statt als falsches „buildable_rc".
+
 ---
 
 ## 4. Beispiel (Lauf `outputs_20260617-175519`)

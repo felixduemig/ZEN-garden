@@ -226,6 +226,11 @@ class Analysis(Subscriptable):
     # Opt-in: render RC heatmaps from the classified capacity-addition analyses
     # at the end of postprocessing (calls rc_heatmaps.py for the scenario folder).
     generate_rc_heatmaps: bool = False
+    # Diagnostic: per-constraint reduced-cost decomposition of capacity_addition for
+    # the given targets ([{"tech","node"[, "capacity_type"]}]). Writes
+    # rc_dual_decomposition.csv. Empty list / False = off.
+    rc_dual_dump: bool = False
+    rc_dual_dump_targets: list = []
     zen_garden_version: str = None
 
 

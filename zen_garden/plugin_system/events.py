@@ -36,6 +36,9 @@ class Event(Enum):
 
     test_event1 = auto()
     test_event2 = auto()
+    # Standard lifecycle events used by plugins
+    after_model_construction = auto()
+    after_postprocessing = auto()
 
 
 class EventPublisher:

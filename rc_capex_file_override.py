@@ -41,16 +41,23 @@ BAK = ".rcoverride_bak"   # Suffix der temporaeren Sicherung
 # Dataset-Helfer
 # ---------------------------------------------------------------------------
 def _nodes(dataset):
-    """Volle Knotenliste aus energy_system/set_nodes.csv."""
-    f = os.path.join(dataset, "energy_system", "set_nodes.csv")
+    """Modell-Knoten: bevorzugt system.json set_nodes, sonst energy_system/set_nodes.csv."""
     try:
+        s = json.load(open(os.path.join(dataset, "system.json")))
+        n = s.get("set_nodes")
+        if n:
+            return sorted(str(x) for x in n)
+    except Exception:
+        pass
+    try:
+        f = os.path.join(dataset, "energy_system", "set_nodes.csv")
         return sorted(pd.read_csv(f)["node"].astype(str).unique())
     except Exception:
         return []
 
 
 def _reference_years(dataset):
-    """Voller Jahresbereich aus einer beliebigen conversion-capex-CSV (fuer No-CSV-Techs)."""
+    """Voller Jahresbereich: aus einer conversion-capex-CSV, sonst aus system.json."""
     base = os.path.join(dataset, "set_technologies", "set_conversion_technologies")
     for dp, _, files in os.walk(base):
         for f in files:
@@ -61,6 +68,16 @@ def _reference_years(dataset):
                         return sorted(int(y) for y in d["year"].unique())
                 except Exception:
                     pass
+    # Fallback (z.B. Toy ohne capex-CSVs): aus system.json ableiten
+    try:
+        s = json.load(open(os.path.join(dataset, "system.json")))
+        ry = int(s.get("reference_year", 0))
+        iv = int(s.get("interval_between_years", 1)) or 1
+        ny = int(s.get("optimized_years", 1))
+        if ny >= 1:
+            return [ry + i * iv for i in range(ny)]
+    except Exception:
+        pass
     return []
 
 

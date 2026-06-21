@@ -503,7 +503,13 @@ class Postprocess:
 
         With Primal Simplex (Method=0) the duals are exact LP duals — no approximation.
 
-        Returns a list of rc values in internal model units, one per row of df.
+        Returns ``(result, result_operational)``, two lists of rc values in internal
+        model units, one per row of df. ``result`` is the lifetime-dual reconstruction
+        (above). ``result_operational`` replaces the lifetime-dual capacity value with
+        the dispatch value from constraint_capacity_factor_conversion
+        (sum_t max_load_t * dual - fixed_opex*discount), which excludes the reduced
+        cost of the capacity variable that leaks into the lifetime dual when capacity
+        is non-basic; it is degeneracy-immune for conversion techs and NaN otherwise.
         Divide by fraction_year to get Euro/kW (see save_capacity_addition_analysis).
         """
         params = self.optimization_setup.parameters
@@ -600,9 +606,80 @@ class Postprocess:
             except Exception:
                 continue
 
+        # --- Operational valuation inputs (conversion only) -------------------
+        # Degeneracy-immune alternative to the lifetime dual. By LP stationarity
+        # of the reference-carrier flow, the dual of constraint_capacity_factor_
+        # conversion (max_load*capacity - reference_flow >= 0) equals the per-hour
+        # marginal operating value of one unit of capacity. Summed over a year
+        # (weighted by max_load) and netted of fixed opex it gives the capacity's
+        # net operating value WITHOUT the reduced cost of the capacity VARIABLE
+        # that leaks into constraint_technology_lifetime's dual when capacity is
+        # non-basic (unbuilt). opval_dispatch[(tech, node, year)] = sum_t
+        # max_load_t * dual_capfactor_t. Only conversion techs have this clean
+        # flow<=capacity mapping; storage/transport operational value needs the
+        # storage-level/arbitrage duals and is left NaN.
+        opval_dispatch = {}
+        conv_techs = set()
+        ofix_lookup = {}
+        try:
+            cf_name = "constraint_capacity_factor_conversion"
+            if cf_name in self.model.constraints:
+                arr = self.model.constraints[cf_name].dual
+                if self.solver.use_scaling:
+                    labels = self.model.constraints[cf_name].labels.data
+                    arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
+                cf = arr.to_series().dropna().rename("dual").reset_index()
+
+                def _pick(columns, kind):
+                    for n in columns:
+                        if not isinstance(n, str):
+                            continue
+                        low = n.lower()
+                        if kind == "time" and "time" in low and "oper" in low:
+                            return n
+                        if kind == "tech" and "technolog" in low:
+                            return n
+                        if kind == "node" and ("node" in low or "location" in low):
+                            return n
+                    return None
+
+                cf_cols = list(cf.columns)
+                c_t = _pick(cf_cols, "time")
+                c_tech = _pick(cf_cols, "tech")
+                c_node = _pick(cf_cols, "node")
+                cf["__y"] = cf[c_t].map(
+                    lambda t: int(es.time_steps.convert_time_step_operation2year(t))
+                )
+                ml = params.max_load.to_series().dropna().rename("m").reset_index()
+                ml_cols = list(ml.columns)
+                m_t = _pick(ml_cols, "time")
+                m_tech = _pick(ml_cols, "tech")
+                m_node = _pick(ml_cols, "node")
+                merged = cf.merge(ml, left_on=[c_tech, c_node, c_t],
+                                  right_on=[m_tech, m_node, m_t], how="left")
+                merged["m"] = merged["m"].fillna(1.0)
+                merged["__mdual"] = merged["m"] * merged["dual"]
+                g = merged.groupby([c_tech, c_node, "__y"])["__mdual"].sum()
+                opval_dispatch = {(str(t), str(n), int(y)): float(v)
+                                  for (t, n, y), v in g.items()}
+                conv_techs = set(k[0] for k in opval_dispatch)
+            ofs = getattr(params, "opex_specific_fixed", None)
+            if ofs is not None:
+                for idx2, val2 in ofs.to_series().dropna().items():
+                    if not isinstance(idx2, tuple):
+                        idx2 = (idx2,)
+                    if len(idx2) == 4:        # (tech, ctype, location, year)
+                        ofix_lookup[(idx2[0], idx2[1], idx2[2], idx2[3])] = float(val2)
+                    elif len(idx2) == 3:      # (tech, location, year)
+                        ofix_lookup[(idx2[0], None, idx2[1], idx2[2])] = float(val2)
+        except Exception as e:
+            logging.debug(f"Operational RC precompute failed: {e}")
+            opval_dispatch, conv_techs, ofix_lookup = {}, set(), {}
+
         tech_cache = {}
         diff_param_cache = {}  # tech -> (kdr_rate, spillover_rate)
         result = []
+        result_operational = []
 
         for idx in df.index:
             tech, ctype, node, y_inv = idx[0], idx[1], idx[2], idx[3]
@@ -620,12 +697,14 @@ class Postprocess:
                 scaling = af * discount_sum
                 if scaling <= 0:
                     result.append(np.nan)
+                    result_operational.append(np.nan)
                     continue
 
                 cs = capex_lookup.get((tech, ctype, node, y_inv),
                      capex_lookup.get((tech, node, y_inv), np.nan))
                 if np.isnan(cs):
                     result.append(np.nan)
+                    result_operational.append(np.nan)
                     continue
 
                 elec_value = 0.0
@@ -757,10 +836,31 @@ class Postprocess:
                     else cs - (elec_value - diff_contribution - e2p_contribution) / scaling
                 )
 
+                # Operational reduced cost (conversion only): same formula, but the
+                # capacity value is taken from the dispatch dual (sum_t max_load*
+                # capacity_factor_dual) minus fixed opex, instead of from the
+                # lifetime dual. This excludes the reduced cost of the capacity
+                # variable that leaks into the lifetime dual when capacity is
+                # non-basic, so it stays interpretable for unbuilt techs. NaN for
+                # non-conversion (storage/transport).
+                if tech in conv_techs:
+                    elec_value_op = 0.0
+                    for y in pay_years:
+                        elec_value_op += opval_dispatch.get((tech, node, y), 0.0)
+                        ofx = ofix_lookup.get((tech, ctype, node, y),
+                              ofix_lookup.get((tech, None, node, y), 0.0))
+                        elec_value_op -= ofx * discount_factors[y]
+                    result_operational.append(
+                        cs - (elec_value_op - diff_contribution - e2p_contribution) / scaling
+                    )
+                else:
+                    result_operational.append(np.nan)
+
             except Exception:
                 result.append(np.nan)
+                result_operational.append(np.nan)
 
-        return result
+        return result, result_operational
 
     def save_capacity_addition_analysis(self):
         """Saves capacity_addition values and capex-equivalent reduced costs to CSV.
@@ -849,12 +949,19 @@ class Postprocess:
             logging.debug(f"Could not retrieve capacity ceiling: {e}")
             df["capacity_ceiling"] = np.nan
 
-        # Dual-based capex-equivalent RC — primary reliable metric
+        # Dual-based capex-equivalent RC — primary reliable metric.
+        # rc_capex_equivalent           : reconstruction from the lifetime dual (legacy)
+        # rc_capex_equivalent_operational: reconstruction from the operational
+        #   (capacity-factor) dual, which excludes the leaked reduced cost of the
+        #   capacity variable (degeneracy-immune; conversion only, else NaN).
         try:
-            df["rc_capex_equivalent"] = self._compute_rc_capex_equivalent(df)
+            rc_life, rc_op = self._compute_rc_capex_equivalent(df)
+            df["rc_capex_equivalent"] = rc_life
+            df["rc_capex_equivalent_operational"] = rc_op
         except Exception as e:
             logging.warning(f"Could not compute rc_capex_equivalent: {e}")
             df["rc_capex_equivalent"] = np.nan
+            df["rc_capex_equivalent_operational"] = np.nan
 
         # Convert to input units (Euro/kW): invert the fraction_year scaling.
         # ZEN-garden stores capex_specific internally as input_value * fraction_year,
@@ -868,12 +975,18 @@ class Postprocess:
                 / self.system.total_hours_per_year
             )
             df["rc_capex_equivalent_input_units"] = df["rc_capex_equivalent"] / fraction_year
+            df["rc_capex_equivalent_operational_input_units"] = (
+                df["rc_capex_equivalent_operational"] / fraction_year
+            )
         except Exception as e:
             logging.warning(f"Could not compute rc_capex_equivalent_input_units: {e}")
             df["rc_capex_equivalent_input_units"] = np.nan
+            df["rc_capex_equivalent_operational_input_units"] = np.nan
 
         df = df[["unit", "value", "capacity", "capacity_ceiling", "vbasis",
-                 "rc_capex_equivalent", "rc_capex_equivalent_input_units"]]
+                 "rc_capex_equivalent", "rc_capex_equivalent_input_units",
+                 "rc_capex_equivalent_operational",
+                 "rc_capex_equivalent_operational_input_units"]]
 
         csv_file = self.name_dir.joinpath("capacity_addition_analysis.csv")
         df.to_csv(csv_file)
@@ -896,6 +1009,14 @@ class Postprocess:
                 self._generate_rc_heatmaps()
             except Exception as e:
                 logging.warning(f"Could not generate RC heatmaps: {e}")
+
+        # Diagnostic: full per-constraint reduced-cost decomposition of capacity_addition
+        # for configured targets (analysis.rc_dual_dump). Best-effort.
+        if getattr(self.analysis, "rc_dual_dump", False):
+            try:
+                self.dump_rc_decomposition()
+            except Exception as e:
+                logging.warning(f"Could not dump RC decomposition: {e}")
 
     def save_rc_components(self):
         """Saves the per-year dual contributions to the RC to rc_components.csv.
@@ -1249,6 +1370,13 @@ class Postprocess:
         except Exception:
             pass
         STORAGE_BUILT_TOL = max(5.0 * yotta, VALUE_TOL)
+        # Multi-year carry-over: a storage built in a PRIOR year persists via its
+        # lifetime. In later years value_power is just the forced yotta-probe while
+        # capacity already carries the prior build -> capacity - value >> 0. Probing
+        # an already-built storage yields a phantom rc (often ratio > 100 %). Detect
+        # via this threshold (well above the perturbation artifacts yotta/e2p*yotta,
+        # below any real build).
+        CARRY_TOL = 1e-2
 
         params = self.optimization_setup.parameters
         sets = self.optimization_setup.sets
@@ -1342,11 +1470,29 @@ class Postprocess:
             ns["ratio_reduction"] = [ns_ratio(r) for _, r in ns.iterrows()]
             ns["rc_reliable"] = ns["case"].isin(["built", "buildable_rc"])
 
+            # Operational (degeneracy-immune) reduced cost, passed through from
+            # capacity_addition_analysis.csv, plus its own ratio = rc_op / capex.
+            # NaN for transport (only conversion has the operational reconstruction).
+            def ns_ratio_op(r):
+                cs = r["capex_specific_input_units"]
+                rcop = r.get("rc_capex_equivalent_operational_input_units", np.nan)
+                if (r["case"] in ("built", "buildable_rc") and np.isfinite(cs)
+                        and cs > CEIL_ZERO and np.isfinite(rcop)):
+                    return rcop / cs
+                return np.nan
+
+            if "rc_capex_equivalent_operational" not in ns.columns:
+                ns["rc_capex_equivalent_operational"] = np.nan
+                ns["rc_capex_equivalent_operational_input_units"] = np.nan
+            ns["ratio_reduction_operational"] = [ns_ratio_op(r) for _, r in ns.iterrows()]
+
             out_cols = [tcol, ccol, ncol, ycol, "tech_type", "unit", "value",
                         "capacity", "capacity_ceiling", "vbasis", "case",
                         "capex_specific_input_units", "rc_capex_equivalent",
                         "rc_capex_equivalent_input_units", "ratio_reduction",
-                        "rc_reliable"]
+                        "rc_capex_equivalent_operational",
+                        "rc_capex_equivalent_operational_input_units",
+                        "ratio_reduction_operational", "rc_reliable"]
             for tname in ("conversion", "transport"):
                 sub = ns[ns["tech_type"] == tname]
                 if sub.empty:
@@ -1377,6 +1523,16 @@ class Postprocess:
 
                 case = (classify(v_p, cap_p, ceil_p, rc_p, STORAGE_BUILT_TOL)
                         if p is not None else "no_power_row")
+
+                # Multi-year carry-over: capacity carried from a prior year's build
+                # (capacity - value beyond the probe) means the storage is already
+                # built here. The forced yotta-probe then produces a phantom rc on an
+                # already-built storage -> treat as built and drop the meaningless rc.
+                carried_over = (p is not None and np.isfinite(cap_p) and np.isfinite(v_p)
+                                and (cap_p - v_p) > CARRY_TOL)
+                if carried_over and case == "buildable_rc":
+                    case = "built"
+                    rc_p = np.nan  # probe phantom on an already-built storage
 
                 # bundle decomposition — same absolute value Δ subtracted from both
                 C_bundle = (cx_p + D * cx_e) if (np.isfinite(D) and np.isfinite(cx_p)
@@ -1454,6 +1610,103 @@ class Postprocess:
         mod.run(str(self.name_dir), vmax=100.0, storage_metric="proportional",
                 annotate=True)
         logging.info(f"RC heatmaps generated under {self.name_dir.joinpath('heatmaps')}")
+
+    def dump_rc_decomposition(self):
+        """Diagnostic: exact per-constraint decomposition of the reduced cost of
+        capacity_addition for configured targets.
+
+        For each target the TRUE reduced cost is computed from the solved model as
+            RC_true = obj_coef(var) - sum_over_constraints( coef_in_constraint * dual )
+        and split by constraint, flagging which constraints the rc_capex_equivalent
+        reconstruction actually captures (lifetime + diffusion [+ storage e2p_min]).
+        This reveals whether an UNcaptured constraint (e.g. constraint_capacity_coupling,
+        construction_time, min/max_capacity_addition) carries a contribution the
+        reconstruction misses — i.e. why the reconstructed RC can be wrong.
+
+        Opt-in via config:
+          analysis.rc_dual_dump = true
+          analysis.rc_dual_dump_targets = [{"tech","node"[, "capacity_type"]}]
+        Writes rc_dual_decomposition.csv next to capacity_addition_analysis.csv.
+        """
+        targets = getattr(self.analysis, "rc_dual_dump_targets", []) or []
+        if not targets:
+            return
+        model = self.model
+        lab = model.variables["capacity_addition"].labels
+        # objective coefficients (capacity_addition has none for conversion, but be general)
+        try:
+            oexpr = model.objective.expression
+            ovars = np.asarray(oexpr.vars.values)
+            ocoef = np.asarray(oexpr.coeffs.values)
+        except Exception:
+            ovars = ocoef = None
+        captured = {"constraint_technology_lifetime",
+                    "constraint_technology_diffusion_limit",
+                    "constraint_technology_diffusion_limit_total",
+                    "constraint_capacity_energy_to_power_ratio_min"}
+        try:
+            comp = pd.read_csv(self.name_dir.joinpath("rc_components.csv"))
+        except Exception:
+            comp = None
+        try:
+            capdf = pd.read_csv(self.name_dir.joinpath("capacity_addition_analysis.csv"))
+        except Exception:
+            capdf = None
+
+        def _lookup(dfx, tech, ctype, node, y, col):
+            if dfx is None:
+                return np.nan
+            m = dfx[(dfx.set_technologies == tech) & (dfx.set_capacity_types == ctype)
+                    & (dfx.set_location == node) & (dfx.set_time_steps_yearly == y)]
+            return float(m[col].iloc[0]) if len(m) else np.nan
+
+        rows = []
+        for t in targets:
+            tech, node = t["tech"], t["node"]
+            ctype = t.get("capacity_type", "power")
+            try:
+                sub = lab.sel(set_technologies=tech, set_capacity_types=ctype,
+                              set_location=node)
+            except Exception as e:
+                logging.warning(f"rc_dual_dump: target {t} not found ({e})")
+                continue
+            for y in [int(v) for v in np.atleast_1d(sub["set_time_steps_yearly"].values)]:
+                L = int(sub.sel(set_time_steps_yearly=y).item())
+                if L < 0:
+                    continue
+                contribs = {}
+                for cname, con in model.constraints.items():
+                    dual = getattr(con, "dual", None)
+                    vv = getattr(con, "vars", None)
+                    if dual is None or vv is None or "_term" not in vv.dims:
+                        continue
+                    if not (np.asarray(vv.values) == L).any():
+                        continue
+                    coef_row = con.coeffs.where(vv == L, 0.0).sum("_term")
+                    contrib = float((coef_row * dual.fillna(0.0)).sum().item())
+                    if abs(contrib) > 1e-12:
+                        contribs[cname] = contrib
+                obj_coef = (float(ocoef[ovars == L].sum())
+                            if (ovars is not None and (ovars == L).any()) else 0.0)
+                rc_true_obj = obj_coef - sum(contribs.values())
+                scaling = _lookup(comp, tech, ctype, node, y, "scaling")
+                rc_recon = _lookup(capdf, tech, ctype, node, y, "rc_capex_equivalent")
+                rc_true_capex = (rc_true_obj / scaling
+                                 if (scaling == scaling and scaling) else np.nan)
+                for cname, c in sorted(contribs.items(), key=lambda kv: -abs(kv[1])):
+                    rows.append(dict(tech=tech, node=node, capacity_type=ctype, year_idx=y,
+                                     constraint=cname, contribution_obj=c,
+                                     captured=(cname in captured)))
+                for label, val in (("== RC_true (obj units) ==", rc_true_obj),
+                                   ("== RC_true (capex units) ==", rc_true_capex),
+                                   ("== rc_reconstructed (capex units) ==", rc_recon),
+                                   ("== mismatch (true - recon, capex) ==", rc_true_capex - rc_recon)):
+                    rows.append(dict(tech=tech, node=node, capacity_type=ctype, year_idx=y,
+                                     constraint=label, contribution_obj=val, captured=""))
+        if rows:
+            f = self.name_dir.joinpath("rc_dual_decomposition.csv")
+            pd.DataFrame(rows).to_csv(f, index=False)
+            logging.info(f"RC dual decomposition saved to {f}")
 
     # ---------------------------------------------------------------------------
     # Boundary shadow prices

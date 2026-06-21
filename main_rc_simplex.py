@@ -28,8 +28,12 @@ from rc_capex_file_override import capex_file_override
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 os.chdir(BASE_DIR)
 
+# Mean-Variance Optimization: set to None to disable, or to a lambda value to enable
+MV_LAMBDA = None  # e.g., 1e-5
+
 DATASETS = {
     "toy":    "5_multiple_time_steps_per_year",
+    "toyplus":    "5_multiple_extended_countries",
     "full":   os.path.join("ZEN-models", "data", "Crystal_Ball"),
     "small":  os.path.join("ZEN-models", "data", "Crystal_Ball_small", "data", "Crystal_Ball"),
     "dechat":   os.path.join("ZEN-models", "data", "Crystal_Ball_DECHAT"),
@@ -50,6 +54,15 @@ with open("./config.json") as f:
     config = json.load(f)
 
 config.pop("plugins", None)
+
+# Add Mean-Variance plugin if enabled
+if MV_LAMBDA is not None:
+    config["plugins"] = {
+        "mean_variance_optimization": {
+            "weighting_factor": MV_LAMBDA,
+            "include_variances_for": ["technology_capex"]
+        }
+    }
 
 config.setdefault("solver", {})
 config["solver"].setdefault("solver_options", {})
@@ -75,7 +88,7 @@ config["solver"]["solver_options"]["rc_perturbation"] = 0
 # cannot select within the dual interval. Units = capacity units (GW). Choose
 # > solver feasibility tolerance (>> 1e-6) and smaller than the smallest positive
 # capacity_limit. Popped before being passed to Gurobi. Set to 0/None to disable.
-config["solver"]["solver_options"]["rc_lifetime_rhs_perturbation"] = 0
+config["solver"]["solver_options"]["rc_lifetime_rhs_perturbation"] = 1e-4
 # +yotta lower bound on capacity_addition of STORAGE POWER at unbuilt greenfield
 # nodes. The energy_to_power_ratio_min constraint then forces a matching energy
 # addition, so the storage RC reflects the joint (power+energy) distance-to-build
@@ -95,7 +108,7 @@ config["solver"]["solver_options"]["rc_storage_power_perturbation"] = 0
 #config["solver"]["solver_options"]["rc_tight_e2p"] = {
 #    "battery": 16,
 #    "pumped_hydro": 22,
-#    "salt_cavern_storage": 145,
+#    # "salt_cavern_storage": 145,  # (nur Crystal_Ball)
 #}
 # Per-(tech, node, year) capex override via the robust DATA-CSV swap
 # (rc_capex_file_override.py): temporarily writes `value` into the technology's capex
@@ -105,11 +118,18 @@ config["solver"]["solver_options"]["rc_storage_power_perturbation"] = 0
 # (Euro/kW for power, Euro/kWh for storage energy; for storage add
 # "capacity_type": "power"|"energy"). Empty list = off. Applied around run() below.
 RC_CAPEX_OVERRIDE = [
-    {"tech": "photovoltaics", "node": "SI", "year": 2050, "value": 280},
-    # {"tech": "nuclear", "node": "NL", "year": 2050, "value": 4500.0},
+    #heat_pump,power,DE,0,conversion,gigawatt,0.0,0.001,inf,0.0,buildable_rc,3600.0,1.1728653757459426,107.02396553681726,0.02972887931578257,True
+    #{"tech": "heat_pump", "node": "CH", "year": 2024, "value": 1511},
+    #{"tech": "heat_pump", "node": "CH", "year": 2025, "value": 1510},
+    #{"tech": "natural_gas_boiler", "node": "IT", "year": 2025, "value": 0}
+    # oil_boiler,power,NL,0,conversion,gigawatt,0.0,0.0001,inf,0.0,buildable_rc,300.7725541250466,235.8794773299577,235.8794773299577,0.784245351162894,True
+    # {"tech": "photovoltaics", "node": "DE", "year": 2024, "value": 180},
     # {"tech": "battery", "node": "CH", "year": 2050, "capacity_type": "power", "value": 70.0},
 ]
+#heat_pump,power,ES,1,conversion,gigawatt,0.0,0.0,inf,0.0,buildable_rc,3600.0,22.926446529021725,2092.038245773232,0.5811217349370089,True
+#natural_gas_boiler,power,IT,2,conversion,gigawatt,0.0,155.2280712103449,inf,-1.0,buildable_rc,876.0,21.648343226653935,1975.4113194321715,2.2550357527764513,True
 
+#reservoir_hydro,power,CZ,0,conversion,gigawatt,0.0,0.0,0.711483902285,0.0,buildable_rc,2523.2837795151254,326.23623119297235,326.23623119297235,0.12929034531964612,True
 #config["solver"]["solver_options"].pop("Crossover", None)
 #config["solver"]["solver_options"].pop("BarHomogeneous", None)
 config["solver"]["solver_options"]["LogFile"] = os.path.join(result_folder, "solver.log")
