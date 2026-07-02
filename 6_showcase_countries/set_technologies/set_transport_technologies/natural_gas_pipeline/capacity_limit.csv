@@ -1,0 +1,9 @@
+edge,capacity_limit
+AT-DE,inf
+DE-AT,inf
+CH-DE,inf
+DE-CH,inf
+AT-IT,inf
+IT-AT,inf
+FR-IT,inf
+IT-FR,inf

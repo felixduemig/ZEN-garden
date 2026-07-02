@@ -249,8 +249,22 @@ def run(out_dir, dataset_dir):
     # ── conversion / transport ──────────────────────────────────────────────
     ns = m[m.tech_type.isin(["conversion", "transport"])].copy()
     if not ns.empty:
+        # operational columns present only on runs with the operational reconstruction
+        if "rc_capex_equivalent_operational_input_units" not in ns.columns:
+            ns["rc_capex_equivalent_operational"] = np.nan
+            ns["rc_capex_equivalent_operational_input_units"] = np.nan
+
+        # Classify the rc sign/magnitude from the OPERATIONAL reduced cost for
+        # CONVERSION (degeneracy-robust), falling back to lifetime where operational
+        # is NaN. Transport -> lifetime (no operational). Mirrors postprocess.
+        def rc_for_case(r):
+            if r.tech_type in ("conversion", "transport") \
+                    and np.isfinite(r.rc_capex_equivalent_operational_input_units):
+                return r.rc_capex_equivalent_operational_input_units
+            return r.rc_capex_equivalent_input_units
+
         ns["case"] = [classify(r.value, r.capacity, r.capacity_ceiling,
-                               r.rc_capex_equivalent_input_units, VALUE_TOL)
+                               rc_for_case(r), VALUE_TOL)
                       for r in ns.itertuples()]
 
         def ratio(r):
@@ -259,12 +273,23 @@ def run(out_dir, dataset_dir):
                 return r.rc_capex_equivalent_input_units / cs
             return np.nan
         ns["ratio_reduction"] = [ratio(r) for r in ns.itertuples()]
+
+        def ratio_op(r):
+            cs = r.capex_specific_input_units
+            rcop = r.rc_capex_equivalent_operational_input_units
+            if (r.case in ("built", "buildable_rc") and np.isfinite(cs)
+                    and cs > CEIL_ZERO and np.isfinite(rcop)):
+                return rcop / cs
+            return np.nan
+        ns["ratio_reduction_operational"] = [ratio_op(r) for r in ns.itertuples()]
         ns["rc_reliable"] = ns["case"].isin(["built", "buildable_rc"])
 
         cols = IDX + ["tech_type", "unit", "value", "capacity", "capacity_ceiling",
                       "vbasis", "case", "capex_specific_input_units",
                       "rc_capex_equivalent", "rc_capex_equivalent_input_units",
-                      "ratio_reduction", "rc_reliable"]
+                      "ratio_reduction", "rc_capex_equivalent_operational",
+                      "rc_capex_equivalent_operational_input_units",
+                      "ratio_reduction_operational", "rc_reliable"]
         for tname in ("conversion", "transport"):
             sub = ns[ns.tech_type == tname]
             if sub.empty:

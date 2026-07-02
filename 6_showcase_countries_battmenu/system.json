@@ -1,0 +1,38 @@
+{
+  "set_conversion_technologies": [
+    "nuclear",
+    "natural_gas_turbine",
+    "photovoltaics",
+    "photovoltaics_capex",
+    "photovoltaics_opex",
+    "photovoltaics_lowcf",
+    "wind_onshore",
+    "run-of-river_hydro",
+    "natural_gas_boiler",
+    "heat_pump"
+  ],
+  "set_storage_technologies": [
+    "battery_2h",
+    "battery_4h",
+    "battery_8h"
+  ],
+  "set_transport_technologies": [
+    "power_line",
+    "natural_gas_pipeline"
+  ],
+  "set_nodes": [
+    "AT",
+    "CH",
+    "DE",
+    "FR",
+    "IT"
+  ],
+  "reference_year": 2025,
+  "unaggregated_time_steps_per_year": 8760,
+  "aggregated_time_steps_per_year": 24,
+  "conduct_time_series_aggregation": true,
+  "optimized_years": 3,
+  "interval_between_years": 1,
+  "use_rolling_horizon": false,
+  "years_in_rolling_horizon": 1
+}

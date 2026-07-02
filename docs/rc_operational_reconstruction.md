@@ -127,6 +127,91 @@ rc_capex_equivalent_operational = capex_specific − value_operational / scaling
 - In `capacity_addition_analysis_conversion.csv` zusätzlich `ratio_reduction_operational`.
 - Erscheint nur in **neuen** Läufen (braucht Live-Duals).
 
+## 5b. Die zwei Wege als Übersetzungskette (PV vs. heat_pump)
+
+Beide Rekonstruktionen beantworten dieselbe Frage: *„Was bringt eine zusätzliche Einheit Kapazität,
+aufsummiert über alle Zeitschritte?"* — pro Zeitschritt `Kapazitätsfaktor × Grenzwert des Carriers`.
+Sie greifen den Wert nur an **verschiedenen Enden derselben Constraint-Kette** ab.
+
+**a) PV — Wert hängt an *einem* Preis (dem Output):**
+```
+ΔS_PV  ──Lifetime-Bilanz [μ_PV]──►  S_PV  ──Kap.-Faktor: G ≤ CF_t·S [ν_t]──►  G_PV (Strom)  ──Strombilanz [λ_elec,t]
+```
+Wert(1 GW PV) = `Σ_t CF_t·λ_elec,t` — mittags & Strom knapp → großer Beitrag; Überschuss (λ=0) → 0.
+- **operativ** liest `ν_t` (unten, am Dispatch) = `Σ CF_t·λ_elec`.
+- **lifetime** liest `μ_PV` (oben, an der Bilanz) = sollte `−Σ CF_t·λ_elec` sein.
+
+**b) heat_pump — Wert hängt am *Spread zweier* Preise:**
+```
+ΔS_HP ──Lifetime [μ_HP]──► S_HP ──Kap.-Faktor [ν_t]──► G_heat ┬─► Wärmebilanz  [+ λ_heat,t]   (Erlös)
+                                                              └─► Strombilanz  [− λ_elec,t]   (Input/COP)
+   ⇒  ν_t = λ_heat,t − λ_elec,t/COP   (Betriebsmarge)
+```
+Wert(1 GW HP) = `Σ_t (λ_heat,t − λ_elec,t/COP)` über profitable Zeitschritte. PV hängt an *einem* (Output-)
+Preis, heat_pump am *Spread* von Output (λ_heat) und Input (λ_elec) → heat_pump erbt jede Degeneration der
+Stromseite (das λ_elec≈0-Überschuss-Regime); deshalb stabilisiert eine dispatchbare Stromquelle (Gasturbine,
+die λ_elec eindeutig macht) auch heat_pumps RC.
+
+**Wo die Degeneration sitzt:** am Übersetzungs-Schritt `S → ΔS` (der Lifetime-Bilanz). Sauber gilt
+`μ = −Σ m_t·ν_t`; bei nicht-basischer Kapazität + Degeneration nur noch `μ = −Σ m_t·ν_t − c̄(S)`. Der Solver
+darf einen Teil des Werts vom Bilanz-Dual μ in die Reduced Cost der Kapazitätsvariable `c̄(S)` umparken →
+lifetime kollabiert. Operativ liest `ν_t` *vor* diesem Schritt (an den Carrier-Preisen) → immun, solange λ
+eindeutig ist.
+
+**Logische Beziehung der beiden (wichtig):** Es gilt exakt
+> **lifetime-RC = operativ-RC − c̄(S)**
+
+d. h. lifetime ist „operativ **plus** ein Degenerations-Risiko". Daraus folgt (generisch, d. h. ohne
+zufällige Auslöschung):
+- **lifetime korrekt ⟹ operativ korrekt** (lifetime verlangt operativ-korrekt *und* `c̄(S)=0` → strikt stärker).
+- **operativ korrekt ⇏ lifetime korrekt** (operativ kann stimmen, während `c̄(S)≠0` lifetime verfälscht).
+- **operativ ist nicht *immer* korrekt** — es kann scheitern, wenn die Carrier-Preise λ *selbst* degenerieren
+  (z. B. Presolve), aber dann scheitern i. d. R. *beide*.
+
+Genau das zeigt die Solver-Matrix (`docs/showcase_stresstest.md`): lifetime nur in 1/6 Konfigs korrekt,
+operativ in 4/6 — und **jede** Konfig, in der lifetime korrekt war, war auch operativ korrekt, nie umgekehrt.
+
+## 5c. Vollständigkeit: verliert die operative Rekonstruktion je einen echten Faktor?
+
+Berechtigte Sorge: operativ liest **nur einen** Dual (ν^cap, Kapazitätsfaktor). Lifetime μ ist dagegen
+— per Stationaritätsbedingung (KKT) der Kapazitätsvariable — die **Summe über *alle* Constraints, in
+denen `capacity` vorkommt**, mal deren Duals. Also gilt exakt:
+
+> **lifetime − operativ = c̄(capacity) [Degenerations-Leak] + (Duals jeder *weiteren* Constraint mit `capacity`).**
+
+Daraus der **Vollständigkeitssatz:**
+> operativ ist mathematisch **vollständig ⟺ die Kapazitätsfaktor-Constraint ist die einzige wertbildende
+> Constraint, in der `capacity` auftaucht.**
+
+Gibt es keine weitere → die Differenz ist *rein* der Leak (= Degenerierung), den operativ entfernt → operativ
+ist der verlässlichere Proxy.
+
+**Faktoren, die man theoretisch verlieren könnte** (Constraints mit `capacity` außer dem Kapazitätsfaktor):
+1. **Min-Load / Must-Run** (`G ≥ min_load·S`) — Kapazität trägt Zwangsproduktions-*Kosten*.
+2. **Reserve / Firm-Capacity / Adequacy / Capacity-Market** — Kapazität verdient eine Zahlung über die Energie hinaus.
+3. **Kapazitäts-skaliertes Ramping.**
+
+**Nachweis für ZEN-garden (LP), exemplarisch heat_pump:**
+- Die einzige wertbildende Kapazitäts-Constraint ist `constraint_capacity_factor_conversion`
+  (`conversion_technology.py:553`): `m_max,t·S ≥ G_t` — reine Obergrenze, **kein min_load-Term**.
+- **Reserve/Firm-Capacity/Adequacy/Capacity-Market existieren in `zen_garden/model/` nicht** (grep leer) → Faktor 2 ausgeschlossen.
+- `min_load` steckt nur in der **On-Off-Constraint** (`technology.py:1950`, MILP-only); der Showcase ist ein **reines LP** → inaktiv → Faktor 1 entfällt.
+- `capacity ≤ limit` ist ein Bound; bindend ⇒ Tech wird als `at_limit` geflaggt, RC wird dann gar nicht benutzt.
+
+⟹ **Für heat_pump (und jede LP-Conversion-Tech) verliert operativ keinen Faktor.** Außerhalb der
+Degenerierung sind operativ und lifetime *identisch*; die einzig mögliche Abweichung ist der Leak, und dort
+ist operativ der *richtigere* (Toy: operativ 2089 ≈ Sweep-Ground-Truth ~2075, lifetime 1650 = falsch).
+
+**Wichtige Nuance:** operativ entfernt *eine* Degenerations-Quelle (den Kapazitäts-Leak c̄), **nicht** die
+Preis-Degenerierung (λ nicht eindeutig, Bedingung C2). Preis-degenerierte Knoten brauchen weiterhin die
+Perturbation. Im Showcase sind die Preise eindeutig (die Gasturbine fixiert λ_elec) → operativ verlässlich
+ohne Perturbation.
+
+**Vorbehalt für Crystal_Ball:** sobald eine Tech als **MILP mit min_load/on-off** läuft (Must-Run-Dual sitzt
+in der On-Off-Constraint, die operativ *nicht* liest) oder ein **Reserve/Kapazitätsmarkt-Constraint** ergänzt
+wird, verliert operativ diesen Faktor und lifetime wäre vollständiger. Vor dem Übertragen also prüfen, ob
+Techs min_load/on-off (MILP) nutzen. Für reine LP-Modelle ohne Reserve-Constraint ist operativ vollständig.
+
 ## 6. Perturbation an/aus (Läufe 164755 vs. 164925)
 
 Fingerabdruck: `capacity`(ungebaut) = 0.0001 → Perturbation AN (164755); = 0 → AUS (164925).

@@ -1,0 +1,3 @@
+edge,node_from,node_to
+MAIN-ISL,MAIN,ISL
+ISL-MAIN,ISL,MAIN

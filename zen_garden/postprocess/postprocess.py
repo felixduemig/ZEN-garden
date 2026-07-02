@@ -619,50 +619,60 @@ class Postprocess:
         # flow<=capacity mapping; storage/transport operational value needs the
         # storage-level/arbitrage duals and is left NaN.
         opval_dispatch = {}
-        conv_techs = set()
+        op_techs = set()   # techs with a clean flow<=capacity map: conversion + transport
         ofix_lookup = {}
+
+        def _pick(columns, kind):
+            for n in columns:
+                if not isinstance(n, str):
+                    continue
+                low = n.lower()
+                if kind == "time" and "time" in low and "oper" in low:
+                    return n
+                if kind == "tech" and "technolog" in low:
+                    return n
+                if kind == "node" and ("node" in low or "location" in low or "edge" in low):
+                    return n
+            return None
+
         try:
-            cf_name = "constraint_capacity_factor_conversion"
-            if cf_name in self.model.constraints:
+            ml = params.max_load.to_series().dropna().rename("m").reset_index()
+            ml_cols = list(ml.columns)
+            m_t = _pick(ml_cols, "time")
+            m_tech = _pick(ml_cols, "tech")
+            m_node = _pick(ml_cols, "node")
+            # Conversion AND transport share the same max_load*capacity >= reference_flow
+            # form, so the per-hour capacity-factor dual gives the operating value of one
+            # unit of capacity for both (transport: the congestion rent on the edge).
+            for cf_name in ("constraint_capacity_factor_conversion",
+                            "constraint_capacity_factor_transport"):
+                if cf_name not in self.model.constraints:
+                    continue
                 arr = self.model.constraints[cf_name].dual
                 if self.solver.use_scaling:
                     labels = self.model.constraints[cf_name].labels.data
                     arr = arr * self.optimization_setup.scaling.D_r_inv[labels]
                 cf = arr.to_series().dropna().rename("dual").reset_index()
-
-                def _pick(columns, kind):
-                    for n in columns:
-                        if not isinstance(n, str):
-                            continue
-                        low = n.lower()
-                        if kind == "time" and "time" in low and "oper" in low:
-                            return n
-                        if kind == "tech" and "technolog" in low:
-                            return n
-                        if kind == "node" and ("node" in low or "location" in low):
-                            return n
-                    return None
-
                 cf_cols = list(cf.columns)
                 c_t = _pick(cf_cols, "time")
                 c_tech = _pick(cf_cols, "tech")
-                c_node = _pick(cf_cols, "node")
+                c_node = _pick(cf_cols, "node")   # node for conversion, edge for transport
+                if c_t is None or c_tech is None or c_node is None:
+                    continue
                 cf["__y"] = cf[c_t].map(
                     lambda t: int(es.time_steps.convert_time_step_operation2year(t))
                 )
-                ml = params.max_load.to_series().dropna().rename("m").reset_index()
-                ml_cols = list(ml.columns)
-                m_t = _pick(ml_cols, "time")
-                m_tech = _pick(ml_cols, "tech")
-                m_node = _pick(ml_cols, "node")
-                merged = cf.merge(ml, left_on=[c_tech, c_node, c_t],
-                                  right_on=[m_tech, m_node, m_t], how="left")
-                merged["m"] = merged["m"].fillna(1.0)
+                if m_t and m_tech and m_node:
+                    merged = cf.merge(ml, left_on=[c_tech, c_node, c_t],
+                                      right_on=[m_tech, m_node, m_t], how="left")
+                    merged["m"] = merged["m"].fillna(1.0)
+                else:
+                    merged = cf.assign(m=1.0)
                 merged["__mdual"] = merged["m"] * merged["dual"]
                 g = merged.groupby([c_tech, c_node, "__y"])["__mdual"].sum()
-                opval_dispatch = {(str(t), str(n), int(y)): float(v)
-                                  for (t, n, y), v in g.items()}
-                conv_techs = set(k[0] for k in opval_dispatch)
+                for (t, n, yv), v in g.items():
+                    opval_dispatch[(str(t), str(n), int(yv))] = float(v)
+                    op_techs.add(str(t))
             ofs = getattr(params, "opex_specific_fixed", None)
             if ofs is not None:
                 for idx2, val2 in ofs.to_series().dropna().items():
@@ -674,7 +684,7 @@ class Postprocess:
                         ofix_lookup[(idx2[0], None, idx2[1], idx2[2])] = float(val2)
         except Exception as e:
             logging.debug(f"Operational RC precompute failed: {e}")
-            opval_dispatch, conv_techs, ofix_lookup = {}, set(), {}
+            opval_dispatch, op_techs, ofix_lookup = {}, set(), {}
 
         tech_cache = {}
         diff_param_cache = {}  # tech -> (kdr_rate, spillover_rate)
@@ -836,14 +846,13 @@ class Postprocess:
                     else cs - (elec_value - diff_contribution - e2p_contribution) / scaling
                 )
 
-                # Operational reduced cost (conversion only): same formula, but the
-                # capacity value is taken from the dispatch dual (sum_t max_load*
-                # capacity_factor_dual) minus fixed opex, instead of from the
-                # lifetime dual. This excludes the reduced cost of the capacity
-                # variable that leaks into the lifetime dual when capacity is
-                # non-basic, so it stays interpretable for unbuilt techs. NaN for
-                # non-conversion (storage/transport).
-                if tech in conv_techs:
+                # Operational reduced cost (conversion + transport): same formula, but
+                # the capacity value is taken from the dispatch dual (sum_t max_load*
+                # capacity_factor_dual) minus fixed opex, instead of from the lifetime
+                # dual. This excludes the reduced cost of the capacity variable that
+                # leaks into the lifetime dual when capacity is non-basic, so it stays
+                # interpretable for unbuilt techs. NaN for storage (needs arbitrage duals).
+                if tech in op_techs:
                     elec_value_op = 0.0
                     for y in pay_years:
                         elec_value_op += opval_dispatch.get((tech, node, y), 0.0)
@@ -1455,9 +1464,26 @@ class Postprocess:
         # ── non-storage: conversion & transport ─────────────────────────────
         ns = work[work["tech_type"].isin(["conversion", "transport"])].copy()
         if not ns.empty:
+            # ensure the operational columns exist (absent on very old runs)
+            if "rc_capex_equivalent_operational_input_units" not in ns.columns:
+                ns["rc_capex_equivalent_operational"] = np.nan
+                ns["rc_capex_equivalent_operational_input_units"] = np.nan
+
+            # Classify the rc sign/magnitude (buildable_rc vs breakeven_unreliable vs
+            # blocked_profitable) from the OPERATIONAL, degeneracy-robust reduced cost
+            # for CONVERSION, falling back to the lifetime value where operational is
+            # NaN. Transport has no operational reconstruction -> lifetime. The
+            # built / at_limit / not_buildable branches do not depend on rc.
+            def rc_for_case(r):
+                if r["tech_type"] in ("conversion", "transport"):
+                    rcop = r["rc_capex_equivalent_operational_input_units"]
+                    if np.isfinite(rcop):
+                        return rcop
+                return r["rc_capex_equivalent_input_units"]
+
             ns["case"] = [
                 classify(r["value"], r["capacity"], r["capacity_ceiling"],
-                         r["rc_capex_equivalent_input_units"], VALUE_TOL)
+                         rc_for_case(r), VALUE_TOL)
                 for _, r in ns.iterrows()
             ]
 
