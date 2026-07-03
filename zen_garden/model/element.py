@@ -16,6 +16,7 @@ import psutil
 import xarray as xr
 from linopy.expressions import LinearExpression
 
+from zen_garden.plugin_system.events import Event, EventPublisher
 from zen_garden.preprocess.extract_input_data import DataInput
 
 
@@ -100,6 +101,9 @@ class Element:
         # construct Params
         t0 = time.perf_counter()
         cls.construct_params(optimization_setup)
+        EventPublisher.trigger(
+            Event.after_construct_params, optimization_setup=optimization_setup
+        )
         t1 = time.perf_counter()
         if optimization_setup.solver.run_diagnostics:
             logging.info(f"Time to construct Params: {t1 - t0:0.1f} seconds")

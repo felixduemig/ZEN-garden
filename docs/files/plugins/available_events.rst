@@ -3,6 +3,34 @@
 Available events
 ====================
 
+.. _plugins.available_events.after_construct_params:
+
+Event ``after_construct_params``
+------------------------------------
+
+The event ``after_construct_params`` is triggered once, after all parameters of all
+element classes have been constructed, but before any variables or constraints are
+built. The ``optimization_setup`` object is passed to the event handler. This is the
+place to overwrite parameter values before they are consumed by the variable and
+constraint construction. The trigger is placed in ``element.py``:
+
+.. code-block:: python
+
+    # construct Params
+    cls.construct_params(optimization_setup)
+    EventPublisher.trigger(
+        Event.after_construct_params, optimization_setup=optimization_setup
+    )
+    # construct Vars
+    cls.construct_vars(optimization_setup)
+
+Exemplary use cases for this event include:
+
+- Overwriting individual parameter values (e.g. a fixed technology attribute) before
+  they enter cost terms or constraint bounds. You have access to
+  ``optimization_setup.parameters``, ``optimization_setup.sets``, and
+  ``optimization_setup.system``.
+
 .. _plugins.available_events.after_model_construction:
 
 Event ``after_model_construction``
@@ -44,3 +72,37 @@ Exemplary use cases for this event include:
 .. note::
     At the moment, you cannot define new sets and parameters through plugins, as you would need to read
     new input data, which is currently not supported.
+
+.. _plugins.available_events.after_postprocessing:
+
+Event ``after_postprocessing``
+------------------------------------
+
+The event ``after_postprocessing`` is triggered once results have been written to
+disk for the current scenario and horizon step. Both the ``optimization_setup``
+object and the ``postprocess`` object (an instance of ``Postprocess``, whose
+``name_dir`` attribute holds the output directory of this scenario/step) are passed
+to the event handler. The trigger is placed in ``runner.py``:
+
+.. code-block:: python
+
+    # write results
+    postprocess = Postprocess(
+        optimization_setup,
+        scenarios=config.scenarios,
+        subfolder=subfolder,
+        model_name=model_name,
+        scenario_name=scenario_name,
+        param_map=param_map,
+    )
+    EventPublisher.trigger(
+        Event.after_postprocessing,
+        optimization_setup=optimization_setup,
+        postprocess=postprocess,
+    )
+
+Exemplary use cases for this event include:
+
+- Deriving and writing additional, plugin-specific result files from the solved
+  model (e.g. reading live constraint duals from ``optimization_setup.model``) into
+  ``postprocess.name_dir``, next to the standard ZEN-garden output files.

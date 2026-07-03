@@ -176,13 +176,18 @@ def run(config="./config.json", dataset=None, job_index=None, folder_output=None
                 step=step,
             )
             # write results
-            Postprocess(
+            postprocess = Postprocess(
                 optimization_setup,
                 scenarios=config.scenarios,
                 subfolder=subfolder,
                 model_name=model_name,
                 scenario_name=scenario_name,
                 param_map=param_map,
+            )
+            EventPublisher.trigger(
+                Event.after_postprocessing,
+                optimization_setup=optimization_setup,
+                postprocess=postprocess,
             )
     logging.info("--- Optimization finished ---")
     return optimization_setup
